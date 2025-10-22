@@ -1,4 +1,4 @@
-# XZKD Static
+# Life@USTC Static
 
 ## Introduction
 

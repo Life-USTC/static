@@ -20,7 +20,7 @@ async def get_and_clean_feed(url: str, path_to_save: str):
     feed_title = getattr(feed.feed, "title", "RSS Feed")
     new_feed = feedgenerator.Rss201rev2Feed(
         title=cast(str, feed_title),
-        link=f"https://static.xzkd.online/rss/{path_to_save.split('/')[-1]}",
+        link=f"https://static.life-ustc.tiankaima.dev/rss/{path_to_save.split('/')[-1]}",
         description="",
     )
 

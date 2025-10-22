@@ -3,5 +3,5 @@ feeds:
     xmlFilename: "ustc_news.xml"
   - url: "https://www.teach.ustc.edu.cn/category/notice/feed"
     xmlFilename: "ustc_teach.xml"
-  - url: "https://xzkd-project.github.io/rss/index.xml"
-    xmlFilename: "xzkd.xml"
+  - url: "https://life-ustc.github.io/rss/index.xml"
+    xmlFilename: "life-ustc.xml"

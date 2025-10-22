@@ -23,11 +23,11 @@
       "color": "#7676D0"
     },
     {
-      "id": "xzkd",
+      "id": "life-ustc",
       "locales": {
         "zh": "应用通知"
       },
-      "url": "https://xzkd-project.github.io/rss/index.xml",
+      "url": "https://life-ustc.github.io/rss/index.xml",
       "icons": {
         "sf-symbols": "apps.iphone"
       },
