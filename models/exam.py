@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import Optional
 
 
 class Exam(BaseModel):
@@ -9,5 +10,5 @@ class Exam(BaseModel):
     examType: str  # 期中/期末
     startHHMM: int
     endHHMM: int
-    examMode: str  # 开卷/闭卷
+    examMode: Optional[str]  # 开卷/闭卷
     additionalInfo: dict[str, str]

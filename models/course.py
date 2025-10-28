@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic import BaseModel
 
 from .lecture import Lecture
@@ -5,15 +6,15 @@ from .exam import Exam
 
 
 class Course(BaseModel):
-    id: str
+    id: int
     name: str
     courseCode: str
     lessonCode: str
     teacherName: str
     lectures: list[Lecture]
     exams: list[Exam]
-    dateTimePlacePersonText: str
-    courseType: str
+    dateTimePlacePersonText: Optional[str]
+    courseType: Optional[str]
     courseGradation: str
     courseCategory: str
     educationType: str

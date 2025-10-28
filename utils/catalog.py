@@ -1,4 +1,6 @@
 import asyncio
+import os
+from json import dump
 from patchright.async_api import Page
 
 from models import Semester, Course, Exam
@@ -15,6 +17,14 @@ async def get_semesters(page: Page) -> list[Semester]:
         max_retries=100,
     )
     json = await response.json()
+    # dump result json to $file/../build/cache/catalog/api/teach/semester/list.json
+    os.makedirs("build/cache/catalog/api/teach/semester", exist_ok=True)
+    dump(
+        json,
+        open("build/cache/catalog/api/teach/semester/list.json", "w"),
+        ensure_ascii=False,
+        indent=4,
+    )
 
     # convert json to Semester
 
@@ -43,6 +53,17 @@ async def get_courses(page: Page, semester_id: str) -> list[Course]:
         max_retries=100,
     )
     json = await response.json()
+    # dump result json to $file/../build/cache/catalog/api/teach/lesson/list-for-teach/$(semester_id).json
+    os.makedirs("build/cache/catalog/api/teach/lesson/list-for-teach", exist_ok=True)
+    dump(
+        json,
+        open(
+            f"build/cache/catalog/api/teach/lesson/list-for-teach/{semester_id}.json",
+            "w",
+        ),
+        ensure_ascii=False,
+        indent=4,
+    )
 
     # convert json to Course
 
@@ -83,7 +104,7 @@ async def get_courses(page: Page, semester_id: str) -> list[Course]:
 async def get_exams(
     page: Page,
     semester_id: str,
-) -> dict[str, list[Exam]]:
+) -> dict[int, list[Exam]]:
     await asyncio.sleep(10)
     url = f"https://catalog.ustc.edu.cn/api/teach/exam/list/{semester_id}"
 
@@ -94,6 +115,14 @@ async def get_exams(
         max_retries=100,
     )
     json = await response.json()
+    # dump result json to $file/../build/cache/catalog/api/teach/exam/list/$(semester_id).json
+    os.makedirs("build/cache/catalog/api/teach/exam/list", exist_ok=True)
+    dump(
+        json,
+        open(f"build/cache/catalog/api/teach/exam/list/{semester_id}.json", "w"),
+        ensure_ascii=False,
+        indent=4,
+    )
 
     result = {}
     for exam_json in json:
@@ -115,7 +144,7 @@ async def get_exams(
         examMode = exam_json["examMode"]
 
         name = exam_json["lesson"]["course"]["cn"]
-        id = exam_json["lesson"]["id"]
+        id: int = exam_json["lesson"]["id"]
 
         exam = Exam(
             startDate=startDate,

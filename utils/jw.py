@@ -1,3 +1,5 @@
+import os
+from json import dump
 from patchright.async_api import Page
 
 from models import Course, Lecture
@@ -76,12 +78,26 @@ def cleanLectures(lectures: list[Lecture]) -> list[Lecture]:
 
 
 async def update_lectures(page: Page, course_list: list[Course]) -> list[Course]:
-    course_id_list = [course.id for course in course_list]
+    course_id_list = [str(course.id) for course in course_list]
     r = await page.request.post(
         url="https://jw.ustc.edu.cn/ws/schedule-table/datum",
         data={"lessonIds": course_id_list},
     )
     json = await r.json()
+    
+    # dumps to $file/../build/cache/jw/api/schedule-table/datum/$(course.id).json
+    os.makedirs("build/cache/jw/api/schedule-table/datum", exist_ok=True)
+    for course in course_list:
+        dump(
+            json,
+            open(
+                f"build/cache/jw/api/schedule-table/datum/{course.id}.json",
+                "w",
+            ),
+            ensure_ascii=False,
+            indent=4,
+        )
+
     json = json["result"]
 
     for schedule_json in json["scheduleList"]:
