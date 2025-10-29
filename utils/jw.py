@@ -84,17 +84,27 @@ async def update_lectures(page: Page, course_list: list[Course]) -> list[Course]
         data={"lessonIds": course_id_list},
     )
     json = await r.json()
-    
+
     # dumps to $file/../build/cache/jw/api/schedule-table/datum/$(course.id).json
     os.makedirs("build/cache/jw/api/schedule-table/datum", exist_ok=True)
-    for course in course_list:
-        dump(
-            json,
-            open(
-                f"build/cache/jw/api/schedule-table/datum/{course.id}.json",
-                "w",
-            ),
-            ensure_ascii=False,
+    dump(
+        json,
+        open(
+            f"build/cache/jw/api/schedule-table/datum/{course_list[0].id}.json",
+            "w",
+        ),
+        ensure_ascii=False,
+    )
+    for course in course_list[1:]:
+        # soft link
+        if os.path.islink(f"build/cache/jw/api/schedule-table/datum/{course.id}.json"):
+            os.unlink(f"build/cache/jw/api/schedule-table/datum/{course.id}.json")
+        if os.path.exists(f"build/cache/jw/api/schedule-table/datum/{course.id}.json"):
+            os.remove(f"build/cache/jw/api/schedule-table/datum/{course.id}.json")
+
+        os.symlink(
+            f"{course_list[0].id}.json",
+            f"build/cache/jw/api/schedule-table/datum/{course.id}.json",
         )
 
     json = json["result"]
