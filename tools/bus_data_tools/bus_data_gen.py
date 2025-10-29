@@ -310,7 +310,7 @@ data = BusData(
     ),
 )
 
-data_json = jsonpickle.encode(data, unpicklable=False, indent=2)
+data_json = jsonpickle.encode(data, unpicklable=False)
 output_path = os.path.join(os.path.dirname(__file__), "bus_data_v3.json")
 
 with open(output_path, "w") as f:

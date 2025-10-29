@@ -23,7 +23,6 @@ async def get_semesters(page: Page) -> list[Semester]:
         json,
         open("build/cache/catalog/api/teach/semester/list.json", "w"),
         ensure_ascii=False,
-        indent=4,
     )
 
     # convert json to Semester
@@ -62,7 +61,6 @@ async def get_courses(page: Page, semester_id: str) -> list[Course]:
             "w",
         ),
         ensure_ascii=False,
-        indent=4,
     )
 
     # convert json to Course
@@ -121,7 +119,6 @@ async def get_exams(
         json,
         open(f"build/cache/catalog/api/teach/exam/list/{semester_id}.json", "w"),
         ensure_ascii=False,
-        indent=4,
     )
 
     result = {}

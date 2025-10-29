@@ -22,4 +22,4 @@ def save_json(obj: Any, path: str) -> None:
         #     encoded = jsonpickle.encode(obj, indent=4)
         # if encoded is not None:
         #     f.write(encoded)
-        dump(obj, f, indent=4, default=pydantic_encoder)
+        dump(obj, f, default=pydantic_encoder)

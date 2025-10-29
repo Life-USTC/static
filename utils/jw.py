@@ -95,7 +95,6 @@ async def update_lectures(page: Page, course_list: list[Course]) -> list[Course]
                 "w",
             ),
             ensure_ascii=False,
-            indent=4,
         )
 
     json = json["result"]
