@@ -82,6 +82,9 @@ async def update_lectures(page: Page, course_list: list[Course]) -> list[Course]
     r = await page.request.post(
         url="https://jw.ustc.edu.cn/ws/schedule-table/datum",
         data={"lessonIds": course_id_list},
+        timeout=10 * 60 * 1000,
+        fail_on_status_code=True,
+        max_retries=100,
     )
     json = await r.json()
 
