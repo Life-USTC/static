@@ -19,6 +19,9 @@ def raw_date_to_unix_timestamp(date_str: str) -> int:
 
 def save_json(obj: Any, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    
     with open(path, "w") as f:
         dump(obj, f, default=pydantic_encoder, ensure_ascii=False)
 

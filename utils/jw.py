@@ -91,14 +91,26 @@ async def update_lectures(
 
     json = await session.post_json(url=url, data={"lessonIds": course_id_list})
 
-    dir_path = cache_dir_from_url(url)
+    for course in course_list:
+        course_json = {}
+        course_json["result"] = {}
+        course_json["result"]["lessonList"] = [
+            item for item in json["result"]["lessonList"] if item["id"] == course.id
+        ]
+        course_json["result"]["scheduleList"] = [
+            item
+            for item in json["result"]["scheduleList"]
+            if item["lessonId"] == course.id
+        ]
+        course_json["result"]["scheduleGroupList"] = [
+            item
+            for item in json["result"]["scheduleGroupList"]
+            if item["lessonId"] == course.id
+        ]
 
-    save_json(json, dir_path / f"{course_list[0].id}.json")
-
-    for course in course_list[1:]:
-        safe_symlink(
-            dir_path / f"{course_list[0].id}.json",
-            dir_path / f"{course.id}.json",
+        save_json(
+            course_json,
+            cache_dir_from_url(url) / f"{course.id}.json",
         )
 
     json = json["result"]
