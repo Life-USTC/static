@@ -90,6 +90,10 @@ async def update_lectures(page: Page, course_list: list[Course]) -> list[Course]
 
     # dumps to $file/../build/cache/jw/api/schedule-table/datum/$(course.id).json
     os.makedirs("build/cache/jw/api/schedule-table/datum", exist_ok=True)
+    if os.path.islink(
+        f"build/cache/jw/api/schedule-table/datum/{course_list[0].id}.json"
+    ):
+        os.unlink(f"build/cache/jw/api/schedule-table/datum/{course_list[0].id}.json")
     dump(
         json,
         open(
