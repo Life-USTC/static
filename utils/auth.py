@@ -95,9 +95,9 @@ class USTCAuth:
         await self.page.wait_for_load_state("networkidle")
 
         if self.totp:
-            await self.page.click("text=动态口令")
+            await self.page.click("div.ant-tabs-tab:nth-of-type(2)")
             totp_code = self.totp.now()  # type: ignore
-            await self.page.fill('input[placeholder="请输入动态口令"]', totp_code)
+            await self.page.fill("input.ant-input", totp_code)
             await self.page.click('button[type="submit"]', timeout=0)
             await self.page.wait_for_timeout(10 * 1000)
             await self.page.wait_for_load_state("networkidle")
