@@ -160,17 +160,25 @@ class USTCSession:
             wait_until="networkidle",
             timeout=0,
         )
-        await self.page.fill('input[name="username"]', strict=True, value=self.username)
-        await self.page.fill('input[type="password"]', strict=True, value=self.password)
+        await self.page.fill(
+            'input[name="username"]:not([type="hidden"])',
+            strict=True,
+            value=self.username,
+        )
+        await self.page.fill(
+            'input[type="password"]:not([type="hidden"])',
+            strict=True,
+            value=self.password,
+        )
         await self.page.click('button[id="submitBtn"]', strict=True)
         await self.page.wait_for_timeout(10 * 1000)
         await self.page.wait_for_load_state("networkidle")
 
         if self.totp:
-            await self.page.click("div.ant-tabs-tab:nth-of-type(2)")
+            await self.page.click("div.ant-tabs-tab:nth-of-type(2)", strict=True)
             totp_code = self.totp.now()
-            await self.page.fill("input.ant-input", totp_code)
-            await self.page.click('button[type="submit"]')
+            await self.page.fill("input.ant-input", strict=True, value=totp_code)
+            await self.page.click('button[type="submit"]', strict=True)
             await self.page.wait_for_timeout(10 * 1000)
             await self.page.wait_for_load_state("networkidle")
 
