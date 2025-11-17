@@ -95,8 +95,8 @@ async def make_curriculum():
     async with USTCAuth() as page:
         semesters = await get_semesters(page=page)
         semesters = [
-            semester for semester in semesters if int(semester.id) >= 221
-        ]  # dropping semester before 2019
+            semester for semester in semesters if int(semester.id) >= 401
+        ]  # dropping semester before 2025
 
         save_json(semesters, os.path.join(curriculum_path, "semesters.json"))
 
