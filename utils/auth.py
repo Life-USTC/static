@@ -151,6 +151,9 @@ class USTCSession:
 
     async def _login(self):
         """Perform USTC login sequence"""
+        # screenshot_dir = Path(__file__).parent.parent / "build" / "screenshots"
+        # screenshot_dir.mkdir(parents=True, exist_ok=True)
+
         if not self.page:
             raise RuntimeError("Page not initialized")
 
@@ -170,17 +173,21 @@ class USTCSession:
             strict=True,
             value=self.password,
         )
+        # await self.page.screenshot(path=screenshot_dir / "before_login_submit.png")
         await self.page.click('button[id="submitBtn"]', strict=True)
         await self.page.wait_for_timeout(10 * 1000)
         await self.page.wait_for_load_state("networkidle")
+        # await self.page.screenshot(path=screenshot_dir / "after_login_submit.png")
 
         if self.totp:
             await self.page.click("div.ant-tabs-tab:nth-of-type(2)", strict=True)
             totp_code = self.totp.now()
             await self.page.fill("input.ant-input", strict=True, value=totp_code)
+            # await self.page.screenshot(path=screenshot_dir / "before_totp_submit.png")
             await self.page.click('button[type="submit"]', strict=True)
             await self.page.wait_for_timeout(10 * 1000)
             await self.page.wait_for_load_state("networkidle")
+            # await self.page.screenshot(path=screenshot_dir / "after_totp_submit.png")
 
         # Login to catalog.ustc.edu.cn
         await self.page.goto(
