@@ -1,9 +1,13 @@
-import os
-from json import dump
-from patchright.async_api import Page
+import logging
 
 from models import Course, Lecture
-from utils.tools import raw_date_to_unix_timestamp
+from utils.tools import (
+    cache_dir_from_url,
+    compose_start_end,
+    safe_symlink,
+    save_json,
+)
+from utils.auth import RequestSession
 
 
 indexStartTimes: dict[int, int] = {
@@ -77,41 +81,24 @@ def cleanLectures(lectures: list[Lecture]) -> list[Lecture]:
     return result
 
 
-async def update_lectures(page: Page, course_list: list[Course]) -> list[Course]:
+async def update_lectures(
+    session: RequestSession, course_list: list[Course]
+) -> list[Course]:
+    logger = logging.getLogger(__name__)
+
+    url = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
     course_id_list = [str(course.id) for course in course_list]
-    r = await page.request.post(
-        url="https://jw.ustc.edu.cn/ws/schedule-table/datum",
-        data={"lessonIds": course_id_list},
-        timeout=10 * 60 * 1000,
-        fail_on_status_code=True,
-        max_retries=100,
-    )
-    json = await r.json()
 
-    # dumps to $file/../build/cache/jw/api/schedule-table/datum/$(course.id).json
-    os.makedirs("build/cache/jw/api/schedule-table/datum", exist_ok=True)
-    if os.path.islink(
-        f"build/cache/jw/api/schedule-table/datum/{course_list[0].id}.json"
-    ):
-        os.unlink(f"build/cache/jw/api/schedule-table/datum/{course_list[0].id}.json")
-    dump(
-        json,
-        open(
-            f"build/cache/jw/api/schedule-table/datum/{course_list[0].id}.json",
-            "w",
-        ),
-        ensure_ascii=False,
-    )
+    json = await session.post_json(url=url, data={"lessonIds": course_id_list})
+
+    dir_path = cache_dir_from_url(url)
+
+    save_json(json, dir_path / f"{course_list[0].id}.json")
+
     for course in course_list[1:]:
-        # soft link
-        if os.path.islink(f"build/cache/jw/api/schedule-table/datum/{course.id}.json"):
-            os.unlink(f"build/cache/jw/api/schedule-table/datum/{course.id}.json")
-        if os.path.exists(f"build/cache/jw/api/schedule-table/datum/{course.id}.json"):
-            os.remove(f"build/cache/jw/api/schedule-table/datum/{course.id}.json")
-
-        os.symlink(
-            f"{course_list[0].id}.json",
-            f"build/cache/jw/api/schedule-table/datum/{course.id}.json",
+        safe_symlink(
+            dir_path / f"{course_list[0].id}.json",
+            dir_path / f"{course.id}.json",
         )
 
     json = json["result"]
@@ -121,12 +108,11 @@ async def update_lectures(page: Page, course_list: list[Course]) -> list[Course]
             course for course in course_list if course.id == schedule_json["lessonId"]
         ][0]
 
-        date = raw_date_to_unix_timestamp(schedule_json["date"])
         startHHMM = int(schedule_json["startTime"])
         endHHMM = int(schedule_json["endTime"])
-
-        startDate = date + int(startHHMM // 100) * 3600 + int(startHHMM % 100) * 60
-        endDate = date + int(endHHMM // 100) * 3600 + int(endHHMM % 100) * 60
+        startDate, endDate = compose_start_end(
+            schedule_json["date"], startHHMM, endHHMM
+        )
 
         location = (
             schedule_json["room"]["nameZh"]
@@ -166,5 +152,6 @@ async def update_lectures(page: Page, course_list: list[Course]) -> list[Course]
 
     for course in course_list:
         course.lectures = cleanLectures(course.lectures)
+        logger.info(f"course {course.id} lectures count {len(course.lectures)}")
 
     return course_list

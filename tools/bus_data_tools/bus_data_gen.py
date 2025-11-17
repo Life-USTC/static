@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 from typing import Optional
 import jsonpickle
 
@@ -311,7 +311,7 @@ data = BusData(
 )
 
 data_json = jsonpickle.encode(data, unpicklable=False)
-output_path = os.path.join(os.path.dirname(__file__), "bus_data_v3.json")
+output_path = Path(__file__).resolve().parent / "bus_data_v3.json"
 
 with open(output_path, "w") as f:
     f.write(str(data_json))

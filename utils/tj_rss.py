@@ -5,7 +5,7 @@ Save rss to outputDir/tj_ustc.xml
 """
 
 import datetime
-import os
+from pathlib import Path
 from typing import cast
 
 import requests
@@ -72,12 +72,15 @@ def parseHTML(html: str):
     return result
 
 
-def tj_ustc_RSS(output_dir: str):
+def tj_ustc_RSS(output_dir: Path | str):
     """
     Make RSS feed from: http://www.tj.ustc.edu.cn/tzgg/list.htm, save rss to outputDir/xml/tj_ustc.xml
 
     :param str output_dir: The directory to save the generated RSS feed
     """
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
 
     s = requests.Session()
     s.mount("http://", HTTPAdapter(max_retries=3))
@@ -101,4 +104,4 @@ def tj_ustc_RSS(output_dir: str):
         fe.link(href=item["link"])
         fe.pubDate(item["date"])
 
-    fg.rss_file(os.path.join(output_dir, "tj_ustc.xml"))
+    fg.rss_file(str(output_path / "tj_ustc.xml"))

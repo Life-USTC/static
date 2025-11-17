@@ -1,31 +1,19 @@
 import asyncio
-import os
-from json import dump
-from patchright.async_api import Page
+import logging
 
 from models import Semester, Course, Exam
-from utils.tools import raw_date_to_unix_timestamp
+from utils.tools import (
+    raw_date_to_unix_timestamp,
+    compose_start_end,
+    join_nonempty,
+)
+from utils.auth import RequestSession
 
 
-async def get_semesters(page: Page) -> list[Semester]:
+async def get_semesters(session: RequestSession) -> list[Semester]:
     url = "https://catalog.ustc.edu.cn/api/teach/semester/list"
 
-    response = await page.request.get(
-        url=url,
-        timeout=10 * 60 * 1000,
-        fail_on_status_code=True,
-        max_retries=100,
-    )
-    json = await response.json()
-    # dump result json to $file/../build/cache/catalog/api/teach/semester/list.json
-    os.makedirs("build/cache/catalog/api/teach/semester", exist_ok=True)
-    dump(
-        json,
-        open("build/cache/catalog/api/teach/semester/list.json", "w"),
-        ensure_ascii=False,
-    )
-
-    # convert json to Semester
+    json = await session.get_json(url=url)
 
     result = []
     for semester_json in json:
@@ -41,40 +29,18 @@ async def get_semesters(page: Page) -> list[Semester]:
     return result
 
 
-async def get_courses(page: Page, semester_id: str) -> list[Course]:
+async def get_courses(session: RequestSession, semester_id: str) -> list[Course]:
     await asyncio.sleep(10)
     url = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach/" + semester_id
 
-    response = await page.request.get(
-        url=url,
-        timeout=10 * 60 * 1000,
-        fail_on_status_code=True,
-        max_retries=100,
-    )
-    json = await response.json()
-    # dump result json to $file/../build/cache/catalog/api/teach/lesson/list-for-teach/$(semester_id).json
-    os.makedirs("build/cache/catalog/api/teach/lesson/list-for-teach", exist_ok=True)
-    dump(
-        json,
-        open(
-            f"build/cache/catalog/api/teach/lesson/list-for-teach/{semester_id}.json",
-            "w",
-        ),
-        ensure_ascii=False,
-    )
-
-    # convert json to Course
+    json = await session.get_json(url=url)
 
     result = []
     for course_json in json:
         teacher_name_list = [
             teacher["cn"] for teacher in course_json["teacherAssignmentList"]
         ]
-        # strip None:
-        teacher_name_list = [
-            teacher_name for teacher_name in teacher_name_list if teacher_name
-        ]
-        teachers = ", ".join(teacher_name_list)
+        teachers = join_nonempty(teacher_name_list)
         result.append(
             Course(
                 id=course_json["id"],
@@ -99,39 +65,22 @@ async def get_courses(page: Page, semester_id: str) -> list[Course]:
     return result
 
 
-async def get_exams(
-    page: Page,
-    semester_id: str,
-) -> dict[int, list[Exam]]:
+async def get_exams(session: RequestSession, semester_id: str) -> dict[int, list[Exam]]:
     await asyncio.sleep(10)
     url = f"https://catalog.ustc.edu.cn/api/teach/exam/list/{semester_id}"
 
-    response = await page.request.get(
-        url=url,
-        timeout=10 * 60 * 1000,
-        fail_on_status_code=True,
-        max_retries=100,
-    )
-    json = await response.json()
-    # dump result json to $file/../build/cache/catalog/api/teach/exam/list/$(semester_id).json
-    os.makedirs("build/cache/catalog/api/teach/exam/list", exist_ok=True)
-    dump(
-        json,
-        open(f"build/cache/catalog/api/teach/exam/list/{semester_id}.json", "w"),
-        ensure_ascii=False,
-    )
+    json = await session.get_json(url=url)
 
     result = {}
     for exam_json in json:
         room_list = [room["room"] for room in exam_json["examRooms"]]
         location = ", ".join(room_list)
 
-        date = raw_date_to_unix_timestamp(exam_json["examDate"])
         startHHMM = int(exam_json["startTime"])
         endHHMM = int(exam_json["endTime"])
-
-        startDate = date + int(startHHMM // 100) * 3600 + int(startHHMM % 100) * 60
-        endDate = date + int(endHHMM // 100) * 3600 + int(endHHMM % 100) * 60
+        startDate, endDate = compose_start_end(
+            exam_json["examDate"], startHHMM, endHHMM
+        )
 
         examType = "Unknown"
         if exam_json["examType"] == 1:

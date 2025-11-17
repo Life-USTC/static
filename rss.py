@@ -1,8 +1,8 @@
 import feedparser
 import html2text
 import yaml
-import os
 import asyncio
+from pathlib import Path
 from tqdm import tqdm
 import feedgenerator
 import datetime
@@ -11,16 +11,17 @@ from typing import cast
 from utils.tj_rss import tj_ustc_RSS
 
 
-async def get_and_clean_feed(url: str, path_to_save: str):
+async def get_and_clean_feed(url: str, path_to_save: Path):
     feed = feedparser.parse(url)
 
     if not feed.entries:
         return
 
     feed_title = getattr(feed.feed, "title", "RSS Feed")
+    filename = path_to_save.name
     new_feed = feedgenerator.Rss201rev2Feed(
         title=cast(str, feed_title),
-        link=f"https://static.life-ustc.tiankaima.dev/rss/{path_to_save.split('/')[-1]}",
+        link=f"https://static.life-ustc.tiankaima.dev/rss/{filename}",
         description="",
     )
 
@@ -32,7 +33,7 @@ async def get_and_clean_feed(url: str, path_to_save: str):
         feed.entries,
         position=0,
         leave=True,
-        desc=f"Processing {path_to_save.split('/')[-1]}",
+        desc=f"Processing {filename}",
     ):
         try:
             date_raw = str(getattr(entry, "published", ""))
@@ -60,19 +61,18 @@ async def get_and_clean_feed(url: str, path_to_save: str):
 
 async def make_rss():
     # load ./rss-config.yaml
-    with open("rss-config.yaml", "r") as f:
+    config_path = Path(__file__).resolve().parent / "rss-config.yaml"
+    with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    rss_path = os.path.join(base_path, "build", "rss")
-
-    if not os.path.exists(rss_path):
-        os.mkdir(rss_path)
+    base_path = Path(__file__).resolve().parent
+    rss_path = base_path / "build" / "rss"
+    rss_path.mkdir(parents=True, exist_ok=True)
 
     tj_ustc_RSS(rss_path)
 
     for feed in tqdm(config["feeds"], position=1, leave=True, desc="Processing feeds"):
-        filepath = os.path.join(rss_path, feed["xmlFilename"])
+        filepath = rss_path / feed["xmlFilename"]
         await get_and_clean_feed(feed["url"], filepath)
 
 

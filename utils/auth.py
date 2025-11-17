@@ -1,5 +1,10 @@
 import os
-from typing import Optional
+import logging
+from typing import Optional, Any, Dict
+from pathlib import Path
+
+from pyotp import TOTP, parse_uri
+from dotenv import load_dotenv
 from patchright.async_api import (
     async_playwright,
     Page,
@@ -7,12 +12,78 @@ from patchright.async_api import (
     BrowserContext,
     Playwright,
 )
-import pyotp
-from dotenv import load_dotenv
+
+from utils.tools import save_json, cache_dir_from_url
 
 
-class USTCAuth:
-    """Context manager for USTC authentication and page access"""
+class RequestSession:
+    def __init__(
+        self,
+        page: Page,
+        timeout_ms: int = 10 * 60 * 1000,
+        fail_on_status_code: bool = True,
+        max_retries: int = 100,
+    ):
+        self.page = page
+        self.timeout_ms = timeout_ms
+        self.fail_on_status_code = fail_on_status_code
+        self.max_retries = max_retries
+        self.logger = logging.getLogger(__name__)
+
+    async def get(self, url: str, **kwargs: Any):
+        params: Dict[str, Any] = {
+            "url": url,
+            "timeout": kwargs.get("timeout", self.timeout_ms),
+            "fail_on_status_code": kwargs.get(
+                "fail_on_status_code", self.fail_on_status_code
+            ),
+            "max_retries": kwargs.get("max_retries", self.max_retries),
+        }
+
+        self.logger.info(f"GET {url}")
+        r = await self.page.request.get(**params)
+        self.logger.info(f"GET {url} done")
+
+        return r
+
+    async def post(self, url: str, data: Any = None, **kwargs: Any):
+        params: Dict[str, Any] = {
+            "url": url,
+            "data": data,
+            "timeout": kwargs.get("timeout", self.timeout_ms),
+            "fail_on_status_code": kwargs.get(
+                "fail_on_status_code", self.fail_on_status_code
+            ),
+            "max_retries": kwargs.get("max_retries", self.max_retries),
+        }
+
+        self.logger.info(f"POST {url}")
+        r = await self.page.request.post(**params)
+        self.logger.info(f"POST {url} done")
+
+        return r
+
+    async def get_json(self, url: str, **kwargs: Any):
+        r = await self.get(url, **kwargs)
+
+        j = await r.json()
+
+        path = Path(f"{cache_dir_from_url(url)}.json")
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        save_json(j, path)
+
+        self.logger.info(f"cache write {path}")
+
+        return j
+
+    async def post_json(self, url: str, data: Any = None, **kwargs: Any):
+        r = await self.post(url, data=data, **kwargs)
+        return await r.json()
+
+
+class USTCSession:
+    """Context manager for USTC authentication and returns a RequestSession"""
 
     def __init__(self, headless: bool = True, proxy: Optional[dict] = None):
         self.headless = headless
@@ -21,6 +92,7 @@ class USTCAuth:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self.totp: Optional[TOTP] = None
 
         load_dotenv()
         self.username = os.getenv("USTC_PASSPORT_USERNAME", "")
@@ -36,12 +108,10 @@ class USTCAuth:
             }
 
         if self.totp_url:
-            self.totp = pyotp.parse_uri(self.totp_url)
-        else:
-            self.totp = None
+            self.totp = parse_uri(self.totp_url)  # type: ignore
 
-    async def __aenter__(self) -> Page:
-        """Initialize browser and perform login"""
+    async def __aenter__(self) -> RequestSession:
+        """Initialize browser, perform login and return RequestSession"""
         # Start playwright
         self.playwright = await async_playwright().__aenter__()
 
@@ -66,9 +136,9 @@ class USTCAuth:
         # Perform login
         await self._login()
 
-        return self.page
+        return RequestSession(self.page)
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc, tb):
         """Cleanup browser resources"""
         if self.page:
             await self.page.close()
@@ -86,19 +156,21 @@ class USTCAuth:
 
         # Login to id.ustc.edu.cn
         await self.page.goto(
-            "https://id.ustc.edu.cn", wait_until="networkidle", timeout=0
+            "https://id.ustc.edu.cn",
+            wait_until="networkidle",
+            timeout=0,
         )
-        await self.page.fill('input[name="username"]', self.username)
-        await self.page.fill('input[type="password"]', self.password)
-        await self.page.click('button[id="submitBtn"]', timeout=0)
+        await self.page.fill('input[name="username"]', strict=True, value=self.username)
+        await self.page.fill('input[type="password"]', strict=True, value=self.password)
+        await self.page.click('button[id="submitBtn"]', strict=True)
         await self.page.wait_for_timeout(10 * 1000)
         await self.page.wait_for_load_state("networkidle")
 
         if self.totp:
             await self.page.click("div.ant-tabs-tab:nth-of-type(2)")
-            totp_code = self.totp.now()  # type: ignore
+            totp_code = self.totp.now()
             await self.page.fill("input.ant-input", totp_code)
-            await self.page.click('button[type="submit"]', timeout=0)
+            await self.page.click('button[type="submit"]')
             await self.page.wait_for_timeout(10 * 1000)
             await self.page.wait_for_load_state("networkidle")
 
