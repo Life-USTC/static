@@ -160,45 +160,49 @@ class USTCSession:
         # Login to id.ustc.edu.cn
         await self.page.goto(
             "https://id.ustc.edu.cn",
-            wait_until="networkidle",
-            timeout=0,
+            # wait_until="networkidle",
+            timeout=60 * 1000,
         )
         await self.page.fill(
             'input[name="username"]:not([type="hidden"])',
             strict=True,
             value=self.username,
+            timeout=60 * 1000,
         )
         await self.page.fill(
             'input[type="password"]:not([type="hidden"])',
             strict=True,
             value=self.password,
+            timeout=60 * 1000,
         )
         # await self.page.screenshot(path=screenshot_dir / "before_login_submit.png")
-        await self.page.click('button[id="submitBtn"]', strict=True)
-        await self.page.wait_for_timeout(10 * 1000)
-        await self.page.wait_for_load_state("networkidle")
+        await self.page.click('button[id="submitBtn"]', strict=True, timeout=60 * 1000)
+        await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
         # await self.page.screenshot(path=screenshot_dir / "after_login_submit.png")
 
         if self.totp:
-            await self.page.click("div.ant-tabs-tab:nth-of-type(2)", strict=True)
+            await self.page.click(
+                "div.ant-tabs-tab:nth-of-type(2)", strict=True, timeout=60 * 1000
+            )
             totp_code = self.totp.now()
             await self.page.fill("input.ant-input", strict=True, value=totp_code)
             # await self.page.screenshot(path=screenshot_dir / "before_totp_submit.png")
-            await self.page.click('button[type="submit"]', strict=True)
-            await self.page.wait_for_timeout(10 * 1000)
-            await self.page.wait_for_load_state("networkidle")
+            await self.page.click(
+                'button[type="submit"]', strict=True, timeout=60 * 1000
+            )
+            await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
             # await self.page.screenshot(path=screenshot_dir / "after_totp_submit.png")
 
         # Login to catalog.ustc.edu.cn
         await self.page.goto(
             "https://passport.ustc.edu.cn/login?service=https://catalog.ustc.edu.cn/ustc_cas_login?next=https://catalog.ustc.edu.cn/",
             wait_until="networkidle",
-            timeout=0,
+            timeout=60 * 1000,
         )
 
         # Login to jw.ustc.edu.cn
         await self.page.goto(
             "https://passport.ustc.edu.cn/login?service=https%3A%2F%2Fjw.ustc.edu.cn%2Fucas-sso%2Flogin",
             wait_until="networkidle",
-            timeout=0,
+            timeout=60 * 1000,
         )
