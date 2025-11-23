@@ -135,6 +135,7 @@ class USTCSession:
 
         # Perform login
         await self._login()
+        await self._after_login()
 
         return RequestSession(self.page)
 
@@ -180,6 +181,10 @@ class USTCSession:
         await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
         # await self.page.screenshot(path=screenshot_dir / "after_login_submit.png")
 
+        # if url contains cas-success, login is successful:
+        if "cas-success" in self.page.url:
+            return
+
         if self.totp:
             await self.page.click(
                 "div.ant-tabs-tab:nth-of-type(2)", strict=True, timeout=60 * 1000
@@ -192,6 +197,12 @@ class USTCSession:
             )
             await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
             # await self.page.screenshot(path=screenshot_dir / "after_totp_submit.png")
+
+    async def _after_login(self):
+        """Navigate to services after login"""
+
+        if not self.page:
+            raise RuntimeError("Page not initialized")
 
         # Login to catalog.ustc.edu.cn
         await self.page.goto(
