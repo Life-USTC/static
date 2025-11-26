@@ -4,7 +4,6 @@ from ..models import Course, Lecture
 from .tools import (
     cache_dir_from_url,
     compose_start_end,
-    safe_symlink,
     save_json,
 )
 from .auth import RequestSession

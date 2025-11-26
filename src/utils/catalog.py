@@ -1,5 +1,4 @@
 import asyncio
-import logging
 
 from ..models import Semester, Course, Exam
 from .tools import (
