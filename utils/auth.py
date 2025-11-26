@@ -4,6 +4,7 @@ from typing import Optional, Any, Dict
 from pathlib import Path
 
 from pyotp import TOTP, parse_uri
+from enum import Enum
 from dotenv import load_dotenv
 from patchright.async_api import (
     async_playwright,
@@ -93,6 +94,7 @@ class USTCSession:
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.totp: Optional[TOTP] = None
+        self.logger = logging.getLogger(__name__)
 
         load_dotenv()
         self.username = os.getenv("USTC_PASSPORT_USERNAME", "")
@@ -141,14 +143,26 @@ class USTCSession:
 
     async def __aexit__(self, exc_type, exc, tb):
         """Cleanup browser resources"""
-        if self.page:
-            await self.page.close()
-        if self.context:
-            await self.context.close()
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        try:
+            if self.page:
+                await self.page.close()
+        except Exception:
+            pass
+        try:
+            if self.context:
+                await self.context.close()
+        except Exception:
+            pass
+        try:
+            if self.browser:
+                await self.browser.close()
+        except Exception:
+            pass
+        try:
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception:
+            pass
 
     async def _login(self):
         """Perform USTC login sequence"""
@@ -164,6 +178,39 @@ class USTCSession:
             wait_until="networkidle",
             timeout=60 * 1000,
         )
+
+        self.logger.info("login state machine start")
+        success = await self._run_login_state_machine(max_turns=10)
+        if not success:
+            self.logger.error("login state machine failed")
+            raise RuntimeError("Login failed: state machine did not reach success URL")
+        self.logger.info("login state machine success")
+
+    def _success_reached(self) -> bool:
+        return bool(self.page and ("cas-success" in self.page.url))
+
+    async def _has_credentials_form(self) -> bool:
+        if not self.page:
+            return False
+        try:
+            user = self.page.locator('input[name="username"]:not([type="hidden"])')
+            pwd = self.page.locator('input[type="password"]:not([type="hidden"])')
+            submit = self.page.locator('button#submitBtn')
+            ok = (
+                await user.count() > 0
+                and await pwd.count() > 0
+                and await submit.count() > 0
+            )
+            self.logger.debug(f"detector credentials_form ok={ok}")
+            return ok
+        except Exception as e:
+            self.logger.debug(f"detector credentials_form error={e}")
+            return False
+
+    async def _fill_credentials(self) -> None:
+        if not self.page:
+            return
+        self.logger.info("action fill_credentials")
         await self.page.fill(
             'input[name="username"]:not([type="hidden"])',
             strict=True,
@@ -176,27 +223,102 @@ class USTCSession:
             value=self.password,
             timeout=60 * 1000,
         )
-        # await self.page.screenshot(path=screenshot_dir / "before_login_submit.png")
-        await self.page.click('button[id="submitBtn"]', strict=True, timeout=60 * 1000)
-        await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
-        # await self.page.screenshot(path=screenshot_dir / "after_login_submit.png")
+        btn = self.page.locator('button#submitBtn')
+        try:
+            await btn.click(force=True, timeout=120 * 1000)
+        except Exception:
+            await self.page.press(
+                'input[type="password"]:not([type="hidden"])',
+                'Enter',
+                timeout=30 * 1000,
+            )
+        try:
+            await self.page.wait_for_url("**cas-success**", timeout=60 * 1000)
+        except Exception:
+            pass
 
-        # if url contains cas-success, login is successful:
-        if "cas-success" in self.page.url:
+    async def _has_totp_tab(self) -> bool:
+        if not self.page or not self.totp:
+            return False
+        try:
+            tab = self.page.locator("div.ant-tabs-tab:nth-of-type(2)")
+            ok = await tab.count() > 0
+            self.logger.debug(f"detector totp_tab ok={ok}")
+            return ok
+        except Exception as e:
+            self.logger.debug(f"detector totp_tab error={e}")
+            return False
+
+    async def _fill_totp(self) -> None:
+        if not self.page or not self.totp:
             return
+        self.logger.info("action fill_totp")
+        await self.page.click("div.ant-tabs-tab:nth-of-type(2)", strict=True, timeout=60 * 1000)
+        totp_code = self.totp.now()
+        await self.page.fill("input.ant-input", strict=True, value=totp_code)
+        await self.page.click('button[type="submit"]', strict=True, timeout=60 * 1000)
+        try:
+            await self.page.wait_for_url("**cas-success**", timeout=60 * 1000)
+        except Exception:
+            pass
 
-        if self.totp:
-            await self.page.click(
-                "div.ant-tabs-tab:nth-of-type(2)", strict=True, timeout=60 * 1000
-            )
-            totp_code = self.totp.now()
-            await self.page.fill("input.ant-input", strict=True, value=totp_code)
-            # await self.page.screenshot(path=screenshot_dir / "before_totp_submit.png")
-            await self.page.click(
-                'button[type="submit"]', strict=True, timeout=60 * 1000
-            )
-            await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
-            # await self.page.screenshot(path=screenshot_dir / "after_totp_submit.png")
+    class LoginState(Enum):
+        CHECK_SUCCESS = "CHECK_SUCCESS"
+        FILL_CREDENTIALS = "FILL_CREDENTIALS"
+        FILL_TOTP = "FILL_TOTP"
+        WAIT = "WAIT"
+        DONE = "DONE"
+        FAILED = "FAILED"
+
+    async def _run_login_state_machine(self, max_turns: int = 10) -> bool:
+        state = self.LoginState.CHECK_SUCCESS
+        attempted_credentials = False
+        attempted_totp = False
+        for i in range(1, max_turns + 1):
+            self.logger.info(f"login turn={i} state={state.value}")
+            if state == self.LoginState.CHECK_SUCCESS:
+                if self._success_reached():
+                    self.logger.info("success url reached")
+                    state = self.LoginState.DONE
+                    break
+                has_creds = False
+                has_totp = False
+                if not attempted_credentials:
+                    has_creds = await self._has_credentials_form()
+                has_totp = await self._has_totp_tab()
+                self.logger.info(f"detectors has_creds={has_creds} has_totp={has_totp}")
+                if has_creds:
+                    state = self.LoginState.FILL_CREDENTIALS
+                elif has_totp:
+                    state = self.LoginState.FILL_TOTP
+                else:
+                    state = self.LoginState.WAIT
+
+            if state == self.LoginState.FILL_CREDENTIALS:
+                await self._fill_credentials()
+                await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
+                state = self.LoginState.CHECK_SUCCESS
+                attempted_credentials = True
+                self.logger.info("after credentials submit, returning to check_success")
+                continue
+
+            if state == self.LoginState.FILL_TOTP:
+                await self._fill_totp()
+                await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
+                state = self.LoginState.CHECK_SUCCESS
+                attempted_totp = True
+                self.logger.info("after totp submit, returning to check_success")
+                continue
+
+            if state == self.LoginState.WAIT:
+                await self.page.wait_for_timeout(500)
+                state = self.LoginState.CHECK_SUCCESS
+                self.logger.info("waiting, returning to check_success")
+                continue
+
+        ok = self._success_reached()
+        self.logger.info(f"login final ok={ok}")
+        return ok
 
     async def _after_login(self):
         """Navigate to services after login"""
