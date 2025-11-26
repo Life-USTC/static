@@ -2,6 +2,7 @@ import os
 import logging
 from typing import Optional, Any, Dict
 from pathlib import Path
+from contextlib import suppress
 
 from pyotp import TOTP, parse_uri
 from enum import Enum
@@ -89,16 +90,17 @@ class USTCSession:
     def __init__(self, headless: bool = True, proxy: Optional[dict] = None):
         self.headless = headless
         self.proxy = proxy
-        self.playwright: Optional[Playwright] = None
-        self.browser: Optional[Browser] = None
-        self.context: Optional[BrowserContext] = None
-        self.page: Optional[Page] = None
+        self.playwright: Playwright
+        self.browser: Browser
+        self.context: BrowserContext
+        self.page: Page
         self.totp: Optional[TOTP] = None
         self.logger = logging.getLogger(__name__)
 
         load_dotenv()
-        self.username = os.getenv("USTC_PASSPORT_USERNAME", "")
-        self.password = os.getenv("USTC_PASSPORT_PASSWORD", "")
+        self.timeout_ms = int(os.getenv("USTC_TIMEOUT_MS", "0"))
+        self.username = os.getenv("USTC_PASSPORT_USERNAME")
+        self.password = os.getenv("USTC_PASSPORT_PASSWORD")
         self.totp_url = os.getenv("USTC_PASSPORT_TOTP_URL", "")
 
         if os.getenv("HTTP_PROXY_URL"):
@@ -114,28 +116,11 @@ class USTCSession:
 
     async def __aenter__(self) -> RequestSession:
         """Initialize browser, perform login and return RequestSession"""
-        # Start playwright
         self.playwright = await async_playwright().__aenter__()
-
-        # Launch browser
-        launch_args = {
-            "headless": self.headless,
-            "args": ["--disable-http2", "--disable-quic"],
-        }
-        self.browser = await self.playwright.chromium.launch(**launch_args)
-
-        # Create context
-        context_args = {}
-        if self.proxy:
-            context_args["proxy"] = self.proxy
-        context_args["locale"] = "zh-CN"
-        self.context = await self.browser.new_context(**context_args)
-        await self.context.clear_cookies()
-
-        # Create page
+        self.browser = await self.playwright.chromium.launch(headless=self.headless)
+        self.context = await self.browser.new_context(locale="zh-CN")
         self.page = await self.context.new_page()
 
-        # Perform login
         await self._login()
         await self._after_login()
 
@@ -143,59 +128,40 @@ class USTCSession:
 
     async def __aexit__(self, exc_type, exc, tb):
         """Cleanup browser resources"""
-        try:
-            if self.page:
-                await self.page.close()
-        except Exception:
-            pass
-        try:
-            if self.context:
-                await self.context.close()
-        except Exception:
-            pass
-        try:
-            if self.browser:
-                await self.browser.close()
-        except Exception:
-            pass
-        try:
-            if self.playwright:
-                await self.playwright.stop()
-        except Exception:
-            pass
+        with suppress(Exception):
+            await self.page.close()
+        with suppress(Exception):
+            await self.context.close()
+        with suppress(Exception):
+            await self.browser.close()
+        with suppress(Exception):
+            await self.playwright.stop()
 
     async def _login(self):
         """Perform USTC login sequence"""
-        # screenshot_dir = Path(__file__).parent.parent / "build" / "screenshots"
-        # screenshot_dir.mkdir(parents=True, exist_ok=True)
-
-        if not self.page:
-            raise RuntimeError("Page not initialized")
-
-        # Login to id.ustc.edu.cn
         await self.page.goto(
             "https://id.ustc.edu.cn",
             wait_until="networkidle",
-            timeout=60 * 1000,
+            timeout=self.timeout_ms,
         )
 
         self.logger.info("login state machine start")
-        success = await self._run_login_state_machine(max_turns=10)
+        success = await self._run_login_state_machine()
         if not success:
             self.logger.error("login state machine failed")
             raise RuntimeError("Login failed: state machine did not reach success URL")
+
         self.logger.info("login state machine success")
 
     def _success_reached(self) -> bool:
         return bool(self.page and ("cas-success" in self.page.url))
 
     async def _has_credentials_form(self) -> bool:
-        if not self.page:
-            return False
         try:
             user = self.page.locator('input[name="username"]:not([type="hidden"])')
             pwd = self.page.locator('input[type="password"]:not([type="hidden"])')
-            submit = self.page.locator('button#submitBtn')
+            submit = self.page.locator("button#submitBtn")
+
             ok = (
                 await user.count() > 0
                 and await pwd.count() > 0
@@ -208,38 +174,20 @@ class USTCSession:
             return False
 
     async def _fill_credentials(self) -> None:
-        if not self.page:
-            return
         self.logger.info("action fill_credentials")
         await self.page.fill(
             'input[name="username"]:not([type="hidden"])',
             strict=True,
             value=self.username,
-            timeout=60 * 1000,
         )
         await self.page.fill(
             'input[type="password"]:not([type="hidden"])',
             strict=True,
             value=self.password,
-            timeout=60 * 1000,
         )
-        btn = self.page.locator('button#submitBtn')
-        try:
-            await btn.click(force=True, timeout=120 * 1000)
-        except Exception:
-            await self.page.press(
-                'input[type="password"]:not([type="hidden"])',
-                'Enter',
-                timeout=30 * 1000,
-            )
-        try:
-            await self.page.wait_for_url("**cas-success**", timeout=60 * 1000)
-        except Exception:
-            pass
+        await self.page.click("button#submitBtn", strict=True)
 
     async def _has_totp_tab(self) -> bool:
-        if not self.page or not self.totp:
-            return False
         try:
             tab = self.page.locator("div.ant-tabs-tab:nth-of-type(2)")
             ok = await tab.count() > 0
@@ -250,92 +198,70 @@ class USTCSession:
             return False
 
     async def _fill_totp(self) -> None:
-        if not self.page or not self.totp:
-            return
-        self.logger.info("action fill_totp")
-        await self.page.click("div.ant-tabs-tab:nth-of-type(2)", strict=True, timeout=60 * 1000)
-        totp_code = self.totp.now()
-        await self.page.fill("input.ant-input", strict=True, value=totp_code)
-        await self.page.click('button[type="submit"]', strict=True, timeout=60 * 1000)
-        try:
-            await self.page.wait_for_url("**cas-success**", timeout=60 * 1000)
-        except Exception:
-            pass
+        if not self.totp:
+            raise ValueError("totp_url is not set")
 
-    class LoginState(Enum):
-        CHECK_SUCCESS = "CHECK_SUCCESS"
-        FILL_CREDENTIALS = "FILL_CREDENTIALS"
-        FILL_TOTP = "FILL_TOTP"
-        WAIT = "WAIT"
-        DONE = "DONE"
-        FAILED = "FAILED"
+        self.logger.info("action fill_totp")
+        await self.page.click("div.ant-tabs-tab:nth-of-type(2)", strict=True)
+        await self.page.fill("input.opt_code_input", strict=True, value=self.totp.now())
+        await self.page.click('button[type="submit"]', strict=True)
 
     async def _run_login_state_machine(self, max_turns: int = 10) -> bool:
-        state = self.LoginState.CHECK_SUCCESS
-        attempted_credentials = False
-        attempted_totp = False
+        class LoginState(Enum):
+            FILL_CREDENTIALS = "FILL_CREDENTIALS"
+            FILL_TOTP = "FILL_TOTP"
+            DONE = "DONE"
+            UNKNOWN = "UNKNOWN"
+
+        async def detect_login_state() -> LoginState:
+            if self._success_reached():
+                return LoginState.DONE
+            elif await self._has_credentials_form():
+                return LoginState.FILL_CREDENTIALS
+            elif await self._has_totp_tab():
+                return LoginState.FILL_TOTP
+            else:
+                return LoginState.UNKNOWN
+
         for i in range(1, max_turns + 1):
+            await self.page.wait_for_timeout(5 * 1000)
+
+            state = await detect_login_state()
             self.logger.info(f"login turn={i} state={state.value}")
-            if state == self.LoginState.CHECK_SUCCESS:
-                if self._success_reached():
-                    self.logger.info("success url reached")
-                    state = self.LoginState.DONE
-                    break
-                has_creds = False
-                has_totp = False
-                if not attempted_credentials:
-                    has_creds = await self._has_credentials_form()
-                has_totp = await self._has_totp_tab()
-                self.logger.info(f"detectors has_creds={has_creds} has_totp={has_totp}")
-                if has_creds:
-                    state = self.LoginState.FILL_CREDENTIALS
-                elif has_totp:
-                    state = self.LoginState.FILL_TOTP
-                else:
-                    state = self.LoginState.WAIT
 
-            if state == self.LoginState.FILL_CREDENTIALS:
-                await self._fill_credentials()
-                await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
-                state = self.LoginState.CHECK_SUCCESS
-                attempted_credentials = True
-                self.logger.info("after credentials submit, returning to check_success")
-                continue
+            try:
+                if state == LoginState.DONE:
+                    self.logger.info("login success")
+                    return True
+                elif state == LoginState.FILL_CREDENTIALS:
+                    await self._fill_credentials()
+                    continue
+                elif state == LoginState.FILL_TOTP:
+                    await self._fill_totp()
+                    continue
+                elif state == LoginState.UNKNOWN:
+                    self.logger.error("login unknown state")
+                    return False
+            except Exception as e:
+                self.logger.error(f"login error={e}")
+                return False
 
-            if state == self.LoginState.FILL_TOTP:
-                await self._fill_totp()
-                await self.page.wait_for_load_state("networkidle", timeout=60 * 1000)
-                state = self.LoginState.CHECK_SUCCESS
-                attempted_totp = True
-                self.logger.info("after totp submit, returning to check_success")
-                continue
-
-            if state == self.LoginState.WAIT:
-                await self.page.wait_for_timeout(500)
-                state = self.LoginState.CHECK_SUCCESS
-                self.logger.info("waiting, returning to check_success")
-                continue
-
-        ok = self._success_reached()
-        self.logger.info(f"login final ok={ok}")
-        return ok
+        self.logger.info(f"login failed")
+        return False
 
     async def _after_login(self):
         """Navigate to services after login"""
-
-        if not self.page:
-            raise RuntimeError("Page not initialized")
 
         # Login to catalog.ustc.edu.cn
         await self.page.goto(
             "https://passport.ustc.edu.cn/login?service=https://catalog.ustc.edu.cn/ustc_cas_login?next=https://catalog.ustc.edu.cn/",
             wait_until="networkidle",
-            timeout=60 * 1000,
+            timeout=self.timeout_ms,
         )
 
         # Login to jw.ustc.edu.cn
         await self.page.goto(
             "https://passport.ustc.edu.cn/login?service=https%3A%2F%2Fjw.ustc.edu.cn%2Fucas-sso%2Flogin",
             wait_until="networkidle",
-            timeout=60 * 1000,
+            timeout=self.timeout_ms,
         )
