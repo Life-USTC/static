@@ -3,12 +3,12 @@ from typing import Optional
 
 
 class Exam(BaseModel):
-    startDate: int  # unix timestamp
-    endDate: int  # unix timestamp
+    startDate: int
+    endDate: int
     name: str
     location: str
-    examType: str  # 期中/期末
+    examType: str
     startHHMM: int
     endHHMM: int
-    examMode: Optional[str]  # 开卷/闭卷
+    examMode: Optional[str]
     additionalInfo: dict[str, str]

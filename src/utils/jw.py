@@ -1,13 +1,13 @@
 import logging
 
-from models import Course, Lecture
-from utils.tools import (
+from ..models import Course, Lecture
+from .tools import (
     cache_dir_from_url,
     compose_start_end,
     safe_symlink,
     save_json,
 )
-from utils.auth import RequestSession
+from .auth import RequestSession
 
 
 indexStartTimes: dict[int, int] = {
@@ -26,7 +26,6 @@ indexStartTimes: dict[int, int] = {
     13: 21 * 60 + 10,
 }
 
-# 0835 0925 0945 1030 1120 1445 1535 1555 1640 1730 2015 2105 2155
 endIndexTimes: dict[int, int] = {
     1: 8 * 60 + 35,
     2: 9 * 60 + 25,
@@ -52,12 +51,6 @@ def findNearestIndex(time: int, times: dict[int, int]) -> int:
 
 
 def cleanLectures(lectures: list[Lecture]) -> list[Lecture]:
-    """
-    This handles the following situations:
-
-    1. At the same time & place, sometimes jw.u.e.c would return two lectures, but with different teacher names, combine them as one.
-    2. A Lecture taking place in non conventional time, for example 19:00 - 21:00 would be split into two lectures, combine them as one.
-    """
     result = []
 
     for lecture in lectures:

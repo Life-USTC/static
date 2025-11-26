@@ -10,6 +10,11 @@ from urllib.parse import urlparse
 
 tz = timezone("Asia/Shanghai")
 
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+BUILD_DIR = BASE_DIR / "build"
+STATIC_DIR = BASE_DIR / "static"
+RSS_CONFIG_PATH = BASE_DIR / "rss-config.yaml"
+
 
 def raw_date_to_unix_timestamp(date_str: str) -> int:
     dt = datetime.strptime(date_str, "%Y-%m-%d")
