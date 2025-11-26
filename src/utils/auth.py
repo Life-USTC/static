@@ -241,7 +241,8 @@ class USTCSession:
                     continue
                 elif state == LoginState.UNKNOWN:
                     self.logger.error("login unknown state")
-                    return False
+                    await self.page.wait_for_timeout(5 * 1000)
+                    continue
             except Exception as e:
                 self.logger.error(f"login error={e}")
                 return False
