@@ -310,8 +310,17 @@ data = BusData(
     ),
 )
 
-data_json = jsonpickle.encode(data, unpicklable=False)
-output_path = Path(__file__).resolve().parent / "bus_data_v3.json"
 
-with open(output_path, "w") as f:
-    f.write(str(data_json))
+def generate_bus_data(output_path: Optional[Path] = None) -> Path:
+    data_json = jsonpickle.encode(data, unpicklable=False)
+    if output_path is None:
+        output_path = (
+            Path(__file__).resolve().parent.parent / "static" / "bus_data_v3.json"
+        )
+    with open(output_path, "w") as f:
+        f.write(str(data_json))
+    return output_path
+
+
+if __name__ == "__main__":
+    generate_bus_data()

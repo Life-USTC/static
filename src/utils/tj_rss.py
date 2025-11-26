@@ -24,15 +24,6 @@ headers = {
 
 
 def parseHTML(html: str):
-    """
-    Parse a given html string to a list of dicts
-
-    :param str html: The html string to parse
-
-    :return: A list of dicts
-    :rtype: list
-    :raises: None
-    """
     soup = BeautifulSoup(html, "html.parser")
     div = soup.find("div", {"id": "wp_news_w5"})
     if not div or not isinstance(div, Tag):
@@ -64,7 +55,6 @@ def parseHTML(html: str):
         result.append(
             {
                 "title": a_tag.text,
-                # 'http://www.tj.ustc.edu.cn' + '/2023/0614/c30734a605933/page.htm
                 "link": "http://www.tj.ustc.edu.cn" + cast(str, a_tag.get("href", "")),
                 "date": date,
             }
@@ -73,12 +63,6 @@ def parseHTML(html: str):
 
 
 def tj_ustc_RSS(output_dir: Path | str):
-    """
-    Make RSS feed from: http://www.tj.ustc.edu.cn/tzgg/list.htm, save rss to outputDir/xml/tj_ustc.xml
-
-    :param str output_dir: The directory to save the generated RSS feed
-    """
-
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 

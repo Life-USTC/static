@@ -2,8 +2,8 @@ from pydantic import BaseModel
 
 
 class Lecture(BaseModel):
-    startDate: int  # unix timestamp
-    endDate: int  # unix timestamp
+    startDate: int
+    endDate: int
     name: str
     location: str
     teacherName: str

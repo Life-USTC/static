@@ -3,11 +3,11 @@ import logging
 from pathlib import Path
 from tqdm import tqdm
 
-from models.course import Course
-from utils.catalog import get_semesters, get_courses, get_exams
-from utils.jw import update_lectures
-from utils.tools import save_json
-from utils.auth import USTCSession, RequestSession
+from .models.course import Course
+from .utils.catalog import get_semesters, get_courses, get_exams
+from .utils.jw import update_lectures
+from .utils.tools import save_json, BUILD_DIR
+from .utils.auth import USTCSession, RequestSession
 
 
 async def fetch_semester(
@@ -16,7 +16,6 @@ async def fetch_semester(
     semester_id: str,
     course_api_path: Path,
 ):
-    # create "$(base_dir)/build/curriculum/$(semester_id)" directory if not exists
     semester_path = curriculum_path / semester_id
     if not semester_path.exists():
         semester_path.mkdir()
@@ -84,10 +83,9 @@ async def fetch_semester(
         await asyncio.gather(*tasks)
 
 
-async def make_curriculum():
-    base_path = Path(__file__).resolve().parent
-    curriculum_path = base_path / "build" / "curriculum"
-    course_api_path = base_path / "build" / "api" / "course"
+async def make_curriculum() -> None:
+    curriculum_path = BUILD_DIR / "curriculum"
+    course_api_path = BUILD_DIR / "api" / "course"
     if not curriculum_path.exists():
         curriculum_path.mkdir(parents=True)
 
@@ -98,7 +96,7 @@ async def make_curriculum():
         semesters = await get_semesters(session=session)
         semesters = [
             semester for semester in semesters if int(semester.id) >= 401
-        ]  # dropping semester before 2025
+        ]
 
         save_json(semesters, curriculum_path / "semesters.json")
 
@@ -114,14 +112,3 @@ async def make_curriculum():
                 str(semester.id),
                 course_api_path,
             )
-
-
-def main():
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
-    asyncio.run(make_curriculum())
-
-
-if __name__ == "__main__":
-    main()

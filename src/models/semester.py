@@ -8,8 +8,8 @@ class Semester(BaseModel):
     id: str
     courses: list[Course]
     name: str
-    startDate: int  # unix timestamp
-    endDate: int  # unix timestamp
+    startDate: int
+    endDate: int
 
     def __str__(self) -> str:
         date_fmt = lambda ts: datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")

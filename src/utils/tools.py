@@ -1,7 +1,5 @@
-import logging
-
-from json import dump
 from datetime import datetime
+from json import dump
 from pathlib import Path
 from pydantic.json import pydantic_encoder
 from pytz import timezone
@@ -9,6 +7,11 @@ from typing import Any, Iterable, Tuple
 from urllib.parse import urlparse
 
 tz = timezone("Asia/Shanghai")
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+BUILD_DIR = BASE_DIR / "build"
+STATIC_DIR = BASE_DIR / "static"
+RSS_CONFIG_PATH = BASE_DIR / "rss-config.yaml"
 
 
 def raw_date_to_unix_timestamp(date_str: str) -> int:
@@ -21,7 +24,7 @@ def save_json(obj: Any, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink() or path.exists():
         path.unlink()
-    
+
     with open(path, "w") as f:
         dump(obj, f, default=pydantic_encoder, ensure_ascii=False)
 
@@ -32,20 +35,6 @@ def compose_start_end(date_str: str, start_hhmm: int, end_hhmm: int) -> Tuple[in
         return base + int(hhmm // 100) * 3600 + int(hhmm % 100) * 60
 
     return compose_datetime(date_str, start_hhmm), compose_datetime(date_str, end_hhmm)
-
-
-def safe_symlink(
-    src_file_name: Path,
-    dst_full_path: Path,
-) -> None:
-    src_file = Path(src_file_name)
-    dst_file = Path(dst_full_path)
-
-    if dst_file.is_symlink() or dst_file.exists():
-        dst_file.unlink()
-
-    dst_file.symlink_to(src_file)
-    logging.getLogger(__name__).info(f"symlink {dst_full_path} -> {src_file_name}")
 
 
 def cache_dir_from_url(url: str) -> Path:

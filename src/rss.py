@@ -1,14 +1,14 @@
 import feedparser
 import html2text
 import yaml
-import asyncio
 from pathlib import Path
 from tqdm import tqdm
 import feedgenerator
 import datetime
 from typing import cast
 
-from utils.tj_rss import tj_ustc_RSS
+from .utils.tj_rss import tj_ustc_RSS
+from .utils.tools import BUILD_DIR, RSS_CONFIG_PATH
 
 
 async def get_and_clean_feed(url: str, path_to_save: Path):
@@ -38,10 +38,8 @@ async def get_and_clean_feed(url: str, path_to_save: Path):
         try:
             date_raw = str(getattr(entry, "published", ""))
             try:
-                # Tue, 10 Aug 2021 00:00:00 GMT
                 date = datetime.datetime.strptime(date_raw, "%a, %d %b %Y %H:%M:%S %Z")
             except ValueError:
-                # Tue, 10 Aug 2021 00:00:00 +0800
                 date = datetime.datetime.strptime(date_raw, "%a, %d %b %Y %H:%M:%S %z")
 
             description = handler.handle(str(getattr(entry, "description", "")))
@@ -59,14 +57,11 @@ async def get_and_clean_feed(url: str, path_to_save: Path):
         new_feed.write(f, "utf-8")
 
 
-async def make_rss():
-    # load ./rss-config.yaml
-    config_path = Path(__file__).resolve().parent / "rss-config.yaml"
-    with open(config_path, "r") as f:
+async def make_rss() -> None:
+    with open(RSS_CONFIG_PATH, "r") as f:
         config = yaml.safe_load(f)
 
-    base_path = Path(__file__).resolve().parent
-    rss_path = base_path / "build" / "rss"
+    rss_path = BUILD_DIR / "rss"
     rss_path.mkdir(parents=True, exist_ok=True)
 
     tj_ustc_RSS(rss_path)
@@ -74,11 +69,3 @@ async def make_rss():
     for feed in tqdm(config["feeds"], position=1, leave=True, desc="Processing feeds"):
         filepath = rss_path / feed["xmlFilename"]
         await get_and_clean_feed(feed["url"], filepath)
-
-
-def main():
-    asyncio.run(make_rss())
-
-
-if __name__ == "__main__":
-    main()

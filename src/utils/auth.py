@@ -15,7 +15,7 @@ from patchright.async_api import (
     Playwright,
 )
 
-from utils.tools import save_json, cache_dir_from_url
+from .tools import save_json, cache_dir_from_url
 
 
 class RequestSession:
@@ -252,14 +252,12 @@ class USTCSession:
     async def _after_login(self):
         """Navigate to services after login"""
 
-        # Login to catalog.ustc.edu.cn
         await self.page.goto(
             "https://passport.ustc.edu.cn/login?service=https://catalog.ustc.edu.cn/ustc_cas_login?next=https://catalog.ustc.edu.cn/",
             wait_until="networkidle",
             timeout=self.timeout_ms,
         )
 
-        # Login to jw.ustc.edu.cn
         await self.page.goto(
             "https://passport.ustc.edu.cn/login?service=https%3A%2F%2Fjw.ustc.edu.cn%2Fucas-sso%2Flogin",
             wait_until="networkidle",
