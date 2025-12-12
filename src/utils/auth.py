@@ -99,8 +99,12 @@ class USTCSession:
 
         load_dotenv()
         self.timeout_ms = int(os.getenv("USTC_TIMEOUT_MS", "0"))
-        self.username = os.getenv("USTC_PASSPORT_USERNAME")
-        self.password = os.getenv("USTC_PASSPORT_PASSWORD")
+        self.username = os.getenv("USTC_PASSPORT_USERNAME", "")
+        self.password = os.getenv("USTC_PASSPORT_PASSWORD", "")
+        if self.username == "" or self.password == "":
+            raise ValueError(
+                "USTC_PASSPORT_USERNAME and USTC_PASSPORT_PASSWORD must be set in environment variables"
+            )
         self.totp_url = os.getenv("USTC_PASSPORT_TOTP_URL", "")
 
         if os.getenv("HTTP_PROXY_URL"):
@@ -176,7 +180,7 @@ class USTCSession:
     async def _fill_credentials(self) -> None:
         self.logger.info("action fill_credentials")
         await self.page.fill(
-            'input[name="username"]:not([type="hidden"])',
+            'input[name="username"][autocomplete="username"]:not([type="hidden"])',
             strict=True,
             value=self.username,
         )
