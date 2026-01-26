@@ -1,5 +1,5 @@
+
 from pydantic import BaseModel
-from typing import Optional
 
 
 class Exam(BaseModel):
@@ -10,5 +10,5 @@ class Exam(BaseModel):
     examType: str
     startHHMM: int
     endHHMM: int
-    examMode: Optional[str]
+    examMode: str | None
     additionalInfo: dict[str, str]

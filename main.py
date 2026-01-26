@@ -1,8 +1,8 @@
-from pathlib import Path
-import shutil
-import asyncio
 import argparse
+import asyncio
 import logging
+import shutil
+from pathlib import Path
 
 from src import make_curriculum, make_rss
 
