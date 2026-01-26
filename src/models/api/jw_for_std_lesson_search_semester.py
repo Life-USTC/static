@@ -8,26 +8,26 @@ from pydantic import BaseModel, Field
 
 
 class RequiredPeriodInfo(BaseModel):
-    total: float
+    total: float | None
     weeks: int | None
     theory: float | None
-    theoryUnit: None
-    requireTheory: None
+    theoryUnit: float | None
+    requireTheory: float | None
     practice: float | None
-    practiceUnit: None
-    requirePractice: None
-    test: None
-    testUnit: None
-    requireTest: None
+    practiceUnit: float | None
+    requirePractice: float | None
+    test: float | None
+    testUnit: float | None
+    requireTest: float | None
     experiment: float | None
-    experimentUnit: None
-    requireExperiment: None
-    machine: None
-    machineUnit: None
-    requireMachine: None
-    design: None
-    designUnit: None
-    requireDesign: None
+    experimentUnit: float | None
+    requireExperiment: float | None
+    machine: float | None
+    machineUnit: float | None
+    requireMachine: float | None
+    design: float | None
+    designUnit: float | None
+    requireDesign: float | None
     periodsPerWeek: float | None
     timesPerWeek: int | None
 
@@ -51,685 +51,640 @@ class DateTimePlacePersonText(BaseModel):
 
 
 class RoomSeatText(BaseModel):
-    textZh: str
-    textEn: str
-    text: str
+    textZh: str | None
+    textEn: str | None
+    text: str | None
 
 
 class ScheduleText(BaseModel):
-    dateTimeText: DateTimeText
-    dateTimePlaceText: DateTimePlaceText
-    dateTimePlacePersonText: DateTimePlacePersonText
-    roomSeatText: RoomSeatText
+    dateTimeText: DateTimeText | None
+    dateTimePlaceText: DateTimePlaceText | None
+    dateTimePlacePersonText: DateTimePlacePersonText | None
+    roomSeatText: RoomSeatText | None
 
 
 class TimeTableLayout(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    enabled: bool
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    enabled: bool | None
 
 
 class BizType(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
 
 
 class Calendar(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
 
 
 class Semester(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
-    calendar: Calendar
-    schoolYear: str
-    startDate: str
-    endDate: str
-    weekStartOnSunday: bool
-    countInTerm: bool
-    season: str
-    enabled: bool
-    fileInfo: None
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
+    calendar: Calendar | None
+    schoolYear: str | None
+    startDate: str | None
+    endDate: str | None
+    weekStartOnSunday: bool | None
+    countInTerm: bool | None
+    season: str | None
+    enabled: bool | None
+    fileInfo: int | None
 
 
 class PeriodInfo(BaseModel):
-    total: float
+    total: float | None
     weeks: int | None
     theory: float | None
-    theoryUnit: None
-    requireTheory: None
+    theoryUnit: float | None
+    requireTheory: float | None
     practice: float | None
-    practiceUnit: None
-    requirePractice: None
-    test: None
-    testUnit: None
-    requireTest: None
+    practiceUnit: float | None
+    requirePractice: float | None
+    test: float | None
+    testUnit: float | None
+    requireTest: float | None
     experiment: float | None
-    experimentUnit: None
-    requireExperiment: None
-    machine: None
-    machineUnit: None
-    requireMachine: None
-    design: None
-    designUnit: None
-    requireDesign: None
+    experimentUnit: float | None
+    requireExperiment: float | None
+    machine: float | None
+    machineUnit: float | None
+    requireMachine: float | None
+    design: float | None
+    designUnit: float | None
+    requireDesign: float | None
     periodsPerWeek: float | None
 
 
 class StageInfo(BaseModel):
-    stage: bool
+    stage: bool | None
     stageNum: int | None
     stageGrantNum: int | None
 
 
 class Education(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class CourseType(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class DefaultOpenDepart(BaseModel):
-    id: int
-    nameZh: str
+    id: int | None
+    nameZh: str | None
     nameEn: str | None
-    code: str
+    code: str | None
     abbrZh: str | None
-    abbrEn: None
-    college: bool
-    openCourse: bool
-    experiment: bool
-    simpleNameZh: str
+    abbrEn: str | None
+    college: bool | None
+    openCourse: bool | None
+    experiment: bool | None
+    simpleNameZh: str | None
     jmRemark: str | None
 
 
 class DefaultExamMode(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
-
-
-class PeriodInfo1(BaseModel):
-    total: float
-    weeks: int | None
-    theory: float
-    theoryUnit: None
-    requireTheory: None
-    practice: float | None
-    practiceUnit: None
-    requirePractice: None
-    test: None
-    testUnit: None
-    requireTest: None
-    experiment: float | None
-    experimentUnit: None
-    requireExperiment: None
-    machine: None
-    machineUnit: None
-    requireMachine: None
-    design: None
-    designUnit: None
-    requireDesign: None
-    periodsPerWeek: float | None
-
-
-class StageInfo1(BaseModel):
-    stage: bool
-    stageNum: int | None
-    stageGrantNum: int | None
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class DefaultPreCourse(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
-    periodInfo: PeriodInfo1
-    stageInfo: StageInfo1
-    credits: float
-    calculateGp: bool
-    theory: bool
-    experiment: bool
-    practice: bool
-    test: bool
-    machine: bool
-    design: bool
-    enabled: bool
-    courseCategoryAssoc: int
-    introduction: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
+    periodInfo: PeriodInfo | None
+    stageInfo: StageInfo | None
+    credits: float | None
+    calculateGp: bool | None
+    theory: bool | None
+    experiment: bool | None
+    practice: bool | None
+    test: bool | None
+    machine: bool | None
+    design: bool | None
+    enabled: bool | None
+    courseCategoryAssoc: int | None
+    introduction: str | None
 
 
 class BelongBizType(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
 
 
 class SuitableBizType(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
 
 
 class MngtDepartment(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
     abbrZh: str | None
-    abbrEn: None
-    college: bool
-    openCourse: bool
-    experiment: bool
-    simpleNameZh: str
+    abbrEn: str | None
+    college: bool | None
+    openCourse: bool | None
+    experiment: bool | None
+    simpleNameZh: str | None
     jmRemark: str | None
 
 
 class TeachLang(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class CourseCategory(BaseModel):
-    nameZh: str
+    nameZh: str | None
     nameEn: str | None
-    id: int
-    code: str
-    enabled: bool
-    suitableBizTypeAssocs: list[int]
-    suitableBizTypeIds: list[int]
-    transient: bool
-    name: str
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    suitableBizTypeAssocs: list[int] | None
+    suitableBizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class CourseClassify(BaseModel):
-    nameZh: str
+    nameZh: str | None
     nameEn: str | None
-    id: int
-    code: str
-    enabled: bool
-    suitableBizTypeAssocs: list[int]
-    suitableBizTypeIds: list[int]
-    transient: bool
-    name: str
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    suitableBizTypeAssocs: list[int] | None
+    suitableBizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class DisciplineType(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class CourseGradation(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    suitableBizTypeAssocs: list[int]
-    educationAssoc: int
-    suitableBizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    suitableBizTypeAssocs: list[int] | None
+    educationAssoc: int | None
+    suitableBizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class RankOption(BaseModel):
-    rank: str
-    score: float
+    rank: str | None
+    score: float | None
 
 
 class ScoreMarkStyle(BaseModel):
-    id: int
-    bizTypeAssoc: int
-    name: str
-    digit: bool
+    id: int | None
+    bizTypeAssoc: int | None
+    name: str | None
+    digit: bool | None
     maxScore: int | None
     maxScale: int | None
-    enabled: bool
-    rankOptions: list[RankOption]
-    transient: bool
+    enabled: bool | None
+    rankOptions: list[RankOption] | None
+    transient: bool | None
 
 
 class MeritCourseType(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class LastExecuteSemester(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    calendarAssoc: int
-    schoolYear: str
-    startDate: str
-    endDate: str
-    weekStartOnSunday: bool
-    countInTerm: bool
-    season: str
-    enabled: bool
-    fileInfoAssoc: None
-    currentYear: int
-    simpleName: str
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    calendarAssoc: int | None
+    schoolYear: str | None
+    startDate: str | None
+    endDate: str | None
+    weekStartOnSunday: bool | None
+    countInTerm: bool | None
+    season: str | None
+    enabled: bool | None
+    fileInfoAssoc: int | None
+    currentYear: int | None
+    simpleName: str | None
+    transient: bool | None
+    name: str | None
 
 
 class Course(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
-    periodInfo: PeriodInfo
-    stageInfo: StageInfo
-    credits: float
-    calculateGp: bool
-    theory: bool
-    experiment: bool
-    practice: bool
-    test: bool
-    machine: bool
-    design: bool
-    enabled: bool
-    education: Education
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
+    periodInfo: PeriodInfo | None
+    stageInfo: StageInfo | None
+    credits: float | None
+    calculateGp: bool | None
+    theory: bool | None
+    experiment: bool | None
+    practice: bool | None
+    test: bool | None
+    machine: bool | None
+    design: bool | None
+    enabled: bool | None
+    education: Education | None
     courseType: CourseType | None
-    defaultOpenDepart: DefaultOpenDepart
-    grantCourseLevel: None
-    defaultExamMode: DefaultExamMode
-    defaultPreCourses: list[DefaultPreCourse]
-    belongBizType: BelongBizType
-    suitableBizTypes: list[SuitableBizType]
-    mngtDepartment: MngtDepartment
-    teachLang: TeachLang
-    courseCategory: CourseCategory
+    defaultOpenDepart: DefaultOpenDepart | None
+    grantCourseLevel: int | None
+    defaultExamMode: DefaultExamMode | None
+    defaultPreCourses: list[DefaultPreCourse] | None
+    belongBizType: BelongBizType | None
+    suitableBizTypes: list[SuitableBizType] | None
+    mngtDepartment: MngtDepartment | None
+    teachLang: TeachLang | None
+    courseCategory: CourseCategory | None
     courseClassify: CourseClassify | None
-    disciplineType: DisciplineType
-    courseGradation: CourseGradation
+    disciplineType: DisciplineType | None
+    courseGradation: CourseGradation | None
     inStoreDateTime: str | None
-    outOfSchoolTeaching: bool
-    scoreMarkStyle: ScoreMarkStyle
+    outOfSchoolTeaching: bool | None
+    scoreMarkStyle: ScoreMarkStyle | None
     syllabusAssoc: int | None
     introduction: str | None
     introductionEn: str | None
-    socreStageNumStr: None
+    socreStageNumStr: str | None
     designateTextbook: str | None
     referenceTextbook: str | None
-    preCourseMode: bool
+    preCourseMode: bool | None
     remark: str | None
-    canPersonalInput: bool
+    canPersonalInput: bool | None
     meritCourseType: MeritCourseType | None
-    seasons: list[str]
+    seasons: list[str] | None
     lastExecuteSemester: LastExecuteSemester | None
 
 
 class PreCourse(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
-    periodInfo: PeriodInfo1
-    stageInfo: StageInfo1
-    credits: float
-    calculateGp: bool
-    theory: bool
-    experiment: bool
-    practice: bool
-    test: bool
-    machine: bool
-    design: bool
-    enabled: bool
-    courseCategoryAssoc: int
-    introduction: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
+    periodInfo: PeriodInfo | None
+    stageInfo: StageInfo | None
+    credits: float | None
+    calculateGp: bool | None
+    theory: bool | None
+    experiment: bool | None
+    practice: bool | None
+    test: bool | None
+    machine: bool | None
+    design: bool | None
+    enabled: bool | None
+    courseCategoryAssoc: int | None
+    introduction: str | None
 
 
 class OpenDepartment(BaseModel):
-    id: int
-    nameZh: str
+    id: int | None
+    nameZh: str | None
     nameEn: str | None
-    code: str
+    code: str | None
     abbrZh: str | None
-    abbrEn: None
-    college: bool
-    openCourse: bool
-    experiment: bool
-    simpleNameZh: str
+    abbrEn: str | None
+    college: bool | None
+    openCourse: bool | None
+    experiment: bool | None
+    simpleNameZh: str | None
     jmRemark: str | None
 
 
 class ExamMode(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class Campus(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
 
 
 class RoomType(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class ContactInfo(BaseModel):
-    email: None
-    telephone: None
-    mobile: None
-    address: None
-    postcode: None
-    qq: None
-    wechat: None
+    email: str | None
+    telephone: str | None
+    mobile: str | None
+    address: str | None
+    postcode: str | None
+    qq: str | None
+    wechat: str | None
 
 
 class Gender(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class Person(BaseModel):
-    id: int
-    nameZh: str
+    id: int | None
+    nameZh: str | None
     nameEn: str | None
-    idCardNumber: None
-    country: None
-    contactInfo: ContactInfo
-    family: None
-    portrait: None
-    gender: Gender
-    idCardType: None
-    birthday: None
-    nation: None
-    politicalVisage: None
-    age: None
-    gid: None
-    introduction: None
+    idCardNumber: str | None
+    country: str | None
+    contactInfo: ContactInfo | None
+    family: str | None
+    portrait: str | None
+    gender: Gender | None
+    idCardType: str | None
+    birthday: str | None
+    nation: str | None
+    politicalVisage: str | None
+    age: int | None
+    gid: str | None
+    introduction: str | None
     personalPage: str | None
 
 
 class Teacher(BaseModel):
-    id: int
-    code: None
-    teaching: bool
-    zaiZhi: bool
-    hireType: None
-    department: None
-    person: Person
-    title: None
-    type: None
-    teacherStation: None
-    teacherEducation: None
-    teacherDegree: None
-    createdAt: str
-    enrollDate: None
+    id: int | None
+    code: str | None
+    teaching: bool | None
+    zaiZhi: bool | None
+    hireType: str | None
+    department: str | None
+    person: Person | None
+    title: str | None
+    type: str | None
+    teacherStation: str | None
+    teacherEducation: str | None
+    teacherDegree: str | None
+    createdAt: str | None
+    enrollDate: str | None
 
 
-class Person1(BaseModel):
-    id: int
-    nameZh: str
+class PersonSummary(BaseModel):
+    id: int | None
+    nameZh: str | None
     nameEn: str | None
-    gid: None
-    introduction: None
-    code: None
-    birthday: None
-    personalPage: None
+    gid: str | None
+    introduction: str | None
+    code: str | None
+    birthday: str | None
+    personalPage: str | None
 
 
 class TeacherLessonType(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: None
-    code: str
-    role: str
-    enabled: bool
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
+    role: str | None
+    enabled: bool | None
 
 
 class TeacherAssignmentListItem(BaseModel):
-    teacher: Teacher
-    person: Person1
-    role: str
-    indexNo: int
-    age: None
-    title: None
+    teacher: Teacher | None
+    person: PersonSummary | None
+    role: str | None
+    indexNo: int | None
+    age: int | None
+    title: str | None
     period: float | None
     teacherLessonType: TeacherLessonType | None
-    contactInfo: None
-    weekIndices: list[int]
+    contactInfo: ContactInfo | None
+    weekIndices: list[int] | None
     weekIndicesMsg: str | None
 
 
 class ClassType(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class TeachingMethod(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class TextbookType(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
+
 
 class TextbookGrade(BaseModel):
-    nameZh: str
-    nameEn: str
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
-
-
-class Semester1(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
-    calendar: Calendar
-    schoolYear: str
-    startDate: str
-    endDate: str
-    weekStartOnSunday: bool
-    countInTerm: bool
-    season: str
-    enabled: bool
-    fileInfo: None
+    nameZh: str | None
+    nameEn: str | None
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class Textbook(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: None
-    publish: bool
-    author: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    publish: bool | None
+    author: str | None
     isbn: str | None
     publishingHouse: str | None
     edition: str | None
     dates: str | None
-    price: None
+    price: float | None
     content: str | None
     remark: str | None
-    enabled: bool
+    enabled: bool | None
     textbookType: TextbookType | None
     textbookGrade: TextbookGrade | None
-    semester: Semester1 | None
-    dateStr: str
+    semester: Semester | None
+    dateStr: str | None
 
 
-class Datum(BaseModel):
-    id: int
+class JwForStdLessonSearchSemesterItem(BaseModel):
+    id: int | None
     nameZh: str | None
-    nameEn: None
-    code: str
+    nameEn: str | None
+    code: str | None
     remark: str | None
-    requiredPeriodInfo: RequiredPeriodInfo
-    actualPeriods: float
-    scheduleText: ScheduleText
-    stdCount: int
-    limitCount: int
-    reserveCount: int
-    suggestScheduleWeeks: list[int]
-    calcRelatedAdminclasses: bool
-    allowMakeup: bool
-    expActualPeriods: int
-    needAssign: bool
-    auto: bool
+    requiredPeriodInfo: RequiredPeriodInfo | None
+    actualPeriods: float | None
+    scheduleText: ScheduleText | None
+    stdCount: int | None
+    limitCount: int | None
+    reserveCount: int | None
+    suggestScheduleWeeks: list[int] | None
+    calcRelatedAdminclasses: bool | None
+    allowMakeup: bool | None
+    expActualPeriods: int | None
+    needAssign: bool | None
+    auto: bool | None
     scheduleRemark: str | None
-    timeTableLayout: TimeTableLayout
-    bizType: BizType
-    semester: Semester
-    course: Course
-    preCourses: list[PreCourse]
+    timeTableLayout: TimeTableLayout | None
+    bizType: BizType | None
+    semester: Semester | None
+    course: Course | None
+    preCourses: list[PreCourse] | None
     courseType: CourseType | None
-    openDepartment: OpenDepartment
-    examMode: ExamMode
+    openDepartment: OpenDepartment | None
+    examMode: ExamMode | None
     campus: Campus | None
     teachLang: TeachLang | None
     roomType: RoomType | None
-    suggestScheduleWeeksInfo: str
-    scheduleWeeksInfo: None
-    teacherAssignmentList: list[TeacherAssignmentListItem]
+    suggestScheduleWeeksInfo: str | None
+    scheduleWeeksInfo: str | None
+    teacherAssignmentList: list[TeacherAssignmentListItem] | None
     scheduleStartWeek: int | None
     scheduleEndWeek: int | None
     planExamWeek: int | None
-    adminclassIds: list[int]
+    adminclassIds: list[int] | None
     courseGradation: CourseGradation | None
-    education: Education
-    classType: ClassType
-    credits: float
+    education: Education | None
+    classType: ClassType | None
+    credits: float | None
     teachingMethod: TeachingMethod | None
-    outOfSchoolTeaching: bool
+    outOfSchoolTeaching: bool | None
     textbook: str | None
-    placementInfo: str
-    nonSelectiveInfo: None
-    selectionInfo: None
+    placementInfo: str | None
+    nonSelectiveInfo: str | None
+    selectionInfo: str | None
     compulsory: bool | None
     grade: str | None
-    graduateAndPostgraduate: bool
-    courseCategory: CourseCategory
+    graduateAndPostgraduate: bool | None
+    courseCategory: CourseCategory | None
     courseClassify: CourseClassify | None
-    preCourseMode: bool
-    selectedStdCount: int
-    courseApplyLimit: int
-    departEditClssList: bool
-    introduction: None
+    preCourseMode: bool | None
+    selectedStdCount: int | None
+    courseApplyLimit: int | None
+    departEditClssList: bool | None
+    introduction: str | None
     needTextbook: bool | None
     publish: bool | None
-    textbooks: list[Textbook]
-    preCourseText: str
+    textbooks: list[Textbook] | None
+    preCourseText: str | None
 
 
 class FieldPage(BaseModel):
-    currentPage: int
-    rowsInPage: int
-    rowsPerPage: int
-    totalRows: int
-    totalPages: int
+    currentPage: int | None
+    rowsInPage: int | None
+    rowsPerPage: int | None
+    totalRows: int | None
+    totalPages: int | None
 
 
 class FieldSort(BaseModel):
-    field: str
-    type: str
-    typeString: str
+    field: str | None
+    type: str | None
+    typeString: str | None
 
 
-class Model(BaseModel):
-    data: list[Datum]
-    field_page_: FieldPage = Field(..., alias='_page_')
-    field_sorts_: list[FieldSort] = Field(..., alias='_sorts_')
+class JwForStdLessonSearchSemesterResponse(BaseModel):
+    data: list[JwForStdLessonSearchSemesterItem] | None
+    field_page_: FieldPage | None = Field(..., alias="_page_")
+    field_sorts_: list[FieldSort] | None = Field(..., alias="_sorts_")

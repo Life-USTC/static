@@ -1,12 +1,12 @@
 import asyncio
 
 from ..models import Course, Exam, Semester
-from ..models.api.catalog_api_teach_exam_list import Model as ExamListModel
+from ..models.api.catalog_api_teach_exam_list import TeachExamListResponse
 from ..models.api.catalog_api_teach_lesson_list_for_teach import (
-    Model as CourseListModel,
+    TeachLessonListResponse,
 )
 from ..models.api.catalog_api_teach_semester_list import (
-    Model as SemesterListModel,
+    TeachSemesterListResponse,
 )
 from .auth import RequestSession
 from .tools import compose_start_end, join_nonempty, raw_date_to_unix_timestamp
@@ -18,17 +18,21 @@ async def fetch_semesters_json(session: RequestSession) -> list[dict]:
 
 
 def parse_semesters(payload: list[dict]) -> list[Semester]:
-    parsed = SemesterListModel(payload)
+    parsed = TeachSemesterListResponse.model_validate(payload)
 
     result = []
-    for item in parsed.root:
+    for item in parsed.root or []:
+        if not item:
+            continue
+        start_date = raw_date_to_unix_timestamp(item.start) if item.start else 0
+        end_date = raw_date_to_unix_timestamp(item.end) if item.end else 0
         result.append(
             Semester(
-                id=str(item.id),
+                id=str(item.id) if item.id is not None else "",
                 courses=[],
-                name=item.nameZh,
-                startDate=raw_date_to_unix_timestamp(item.start),
-                endDate=raw_date_to_unix_timestamp(item.end),
+                name=item.nameZh or "",
+                startDate=start_date,
+                endDate=end_date,
             )
         )
     return result
@@ -46,30 +50,47 @@ async def fetch_courses_json(session: RequestSession, semester_id: str) -> list[
 
 
 def parse_courses(payload: list[dict]) -> list[Course]:
-    parsed = CourseListModel(payload)
+    parsed = TeachLessonListResponse.model_validate(payload)
 
     result = []
-    for item in parsed.root:
-        teacher_names = [ta.cn for ta in item.teacherAssignmentList]
+    for item in parsed.root or []:
+        if not item:
+            continue
+        teacher_names = [
+            ta.cn for ta in (item.teacherAssignmentList or []) if ta and ta.cn
+        ]
         teachers = join_nonempty(teacher_names)
+        course = item.course
         result.append(
             Course(
-                id=item.id,
-                name=item.course.cn,
-                courseCode=item.course.code,
-                lessonCode=item.code,
+                id=item.id or 0,
+                name=course.cn if course and course.cn else "",
+                courseCode=course.code if course and course.code else "",
+                lessonCode=item.code or "",
                 teacherName=teachers,
                 lectures=[],
                 exams=[],
-                dateTimePlacePersonText=item.dateTimePlacePersonText.cn,
+                dateTimePlacePersonText=item.dateTimePlacePersonText.cn
+                if item.dateTimePlacePersonText
+                else None,
                 courseType=item.courseType.cn if item.courseType else None,
-                courseGradation=item.courseGradation.cn,
-                courseCategory=item.courseCategory.cn,
-                educationType=item.education.cn,
-                classType=item.classType.cn,
-                openDepartment=item.openDepartment.cn,
+                courseGradation=item.courseGradation.cn
+                if item.courseGradation and item.courseGradation.cn
+                else "",
+                courseCategory=item.courseCategory.cn
+                if item.courseCategory and item.courseCategory.cn
+                else "",
+                educationType=item.education.cn
+                if item.education and item.education.cn
+                else "",
+                classType=item.classType.cn
+                if item.classType and item.classType.cn
+                else "",
+                openDepartment=item.openDepartment.cn
+                if item.openDepartment and item.openDepartment.cn
+                else "",
                 description="",
-                credit=item.credits,
+                credit=item.credits or 0,
                 additionalInfo={},
             )
         )
@@ -88,15 +109,25 @@ async def fetch_exams_json(session: RequestSession, semester_id: str) -> list[di
 
 
 def parse_exams(payload: list[dict]) -> dict[int, list[Exam]]:
-    parsed = ExamListModel(payload)
+    parsed = TeachExamListResponse.model_validate(payload)
 
     result: dict[int, list[Exam]] = {}
-    for exam_item in parsed.root:
-        room_list = [er.room for er in exam_item.examRooms]
+    for exam_item in parsed.root or []:
+        if not exam_item:
+            continue
+        if not exam_item.examDate:
+            continue
+        if exam_item.startTime is None or exam_item.endTime is None:
+            continue
+        if not exam_item.lesson or not exam_item.lesson.course:
+            continue
+        if exam_item.lesson.id is None:
+            continue
+        room_list = [er.room for er in (exam_item.examRooms or []) if er and er.room]
         location = ", ".join(room_list)
 
-        startHHMM = exam_item.startTime
-        endHHMM = exam_item.endTime
+        startHHMM = int(exam_item.startTime)
+        endHHMM = int(exam_item.endTime)
         startDate, endDate = compose_start_end(exam_item.examDate, startHHMM, endHHMM)
 
         examType = "Unknown"
@@ -105,8 +136,8 @@ def parse_exams(payload: list[dict]) -> dict[int, list[Exam]]:
         elif exam_item.examType == 2:
             examType = "期末考试"
 
-        name = exam_item.lesson.course.cn
-        lesson_id = exam_item.lesson.id
+        name = exam_item.lesson.course.cn or ""
+        lesson_id = int(exam_item.lesson.id)
 
         exam = Exam(
             startDate=startDate,
@@ -116,7 +147,7 @@ def parse_exams(payload: list[dict]) -> dict[int, list[Exam]]:
             examType=examType,
             startHHMM=startHHMM,
             endHHMM=endHHMM,
-            examMode=exam_item.examMode,
+            examMode=exam_item.examMode or "",
             additionalInfo={},
         )
         if lesson_id in result:

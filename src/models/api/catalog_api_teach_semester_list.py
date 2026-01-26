@@ -7,14 +7,14 @@ from __future__ import annotations
 from pydantic import BaseModel, RootModel
 
 
-class ModelItem(BaseModel):
-    id: int
-    nameZh: str
-    code: str
-    start: str
-    end: str
-    isLast: bool
+class TeachSemesterListItem(BaseModel):
+    id: int | None
+    nameZh: str | None
+    code: str | None
+    start: str | None
+    end: str | None
+    isLast: bool | None
 
 
-class Model(RootModel[list[ModelItem]]):
-    root: list[ModelItem]
+class TeachSemesterListResponse(RootModel[list[TeachSemesterListItem] | None]):
+    root: list[TeachSemesterListItem] | None

@@ -10,50 +10,50 @@ from pydantic import BaseModel
 
 
 class Title(BaseModel):
-    nameZh: str
+    nameZh: str | None
     nameEn: str | None
-    id: int
-    code: str
-    enabled: bool
-    bizTypeAssocs: list[int]
-    specialistPositionLevelAssoc: int
-    bizTypeIds: list[int]
-    transient: bool
-    name: str
+    id: int | None
+    code: str | None
+    enabled: bool | None
+    bizTypeAssocs: list[int] | None
+    specialistPositionLevelAssoc: int | None
+    bizTypeIds: list[int] | None
+    transient: bool | None
+    name: str | None
 
 
 class TeacherLessonType(BaseModel):
-    id: int
-    nameZh: str
+    id: int | None
+    nameZh: str | None
     nameEn: str | None
-    code: str
-    role: str
-    enabled: bool
+    code: str | None
+    role: str | None
+    enabled: bool | None
 
 
 class ContactInfo(BaseModel):
-    email: None
-    telephone: None
-    mobile: None
-    address: None
-    postcode: None
-    qq: None
-    wechat: None
+    email: str | None
+    telephone: str | None
+    mobile: str | None
+    address: str | None
+    postcode: str | None
+    qq: str | None
+    wechat: str | None
 
 
 class TeacherAssignmentListItem(BaseModel):
-    role: str
-    code: str
-    teacherId: int
-    personId: int
-    name: str
+    role: str | None
+    code: str | None
+    teacherId: int | None
+    personId: int | None
+    name: str | None
     age: int | None
     titleName: str | None
     title: Title | None
     period: float | None
     teacherLessonType: TeacherLessonType | None
-    contactInfo: ContactInfo
-    weekIndices: list[Any]
+    contactInfo: ContactInfo | None
+    weekIndices: list[Any] | None
     weekIndicesMsg: str | None
 
 
@@ -83,103 +83,103 @@ class RequiredPeriodInfo(BaseModel):
 
 
 class LessonListItem(BaseModel):
-    id: int
-    code: str
+    id: int | None
+    code: str | None
     name: str | None
-    courseId: int
-    bizTypeId: int
-    courseName: str
-    courseTypeName: str
-    teacherAssignmentList: list[TeacherAssignmentListItem]
-    requiredPeriodInfo: RequiredPeriodInfo
-    actualPeriods: float
-    scheduleState: str
-    limitCount: int
-    stdCount: int
-    suggestScheduleWeeks: list[int]
-    suggestScheduleWeekInfo: str
+    courseId: int | None
+    bizTypeId: int | None
+    courseName: str | None
+    courseTypeName: str | None
+    teacherAssignmentList: list[TeacherAssignmentListItem] | None
+    requiredPeriodInfo: RequiredPeriodInfo | None
+    actualPeriods: float | None
+    scheduleState: str | None
+    limitCount: int | None
+    stdCount: int | None
+    suggestScheduleWeeks: list[int] | None
+    suggestScheduleWeekInfo: str | None
     campusId: int | None
     roomTypeId: int | None
-    adminclassIds: list[Any]
+    adminclassIds: list[Any] | None
     remark: str | None
     scheduleRemark: str | None
-    adminclasses: list[Any]
-    scheduleJsonParams: list[Any]
-    selectedStdCount: int
+    adminclasses: list[Any] | None
+    scheduleJsonParams: list[Any] | None
+    selectedStdCount: int | None
 
 
 class Campus(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
 
 
 class Building(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
-    campus: Campus
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
+    campus: Campus | None
 
 
 class RoomType(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
 
 
 class Room(BaseModel):
-    id: int
-    nameZh: str
-    nameEn: str
-    code: str
-    building: Building
-    roomType: RoomType
-    floor: int
-    virtual: bool
-    seatsForLesson: int
+    id: int | None
+    nameZh: str | None
+    nameEn: str | None
+    code: str | None
+    building: Building | None
+    roomType: RoomType | None
+    floor: int | None
+    virtual: bool | None
+    seatsForLesson: int | None
     remark: str | None
-    seats: int
+    seats: int | None
 
 
 class ScheduleListItem(BaseModel):
-    lessonId: int
-    scheduleGroupId: int
-    periods: float
-    date: str
+    lessonId: int | None
+    scheduleGroupId: int | None
+    periods: float | None
+    date: str | None
     room: Room | None
-    weekday: int
-    startTime: int
-    endTime: int
+    weekday: int | None
+    startTime: int | None
+    endTime: int | None
     teacherId: int | None
     personId: int | None
     personName: str | None
-    experiment: None
+    experiment: bool | None
     customPlace: str | None
-    lessonType: None
-    weekIndex: int
+    lessonType: str | None
+    weekIndex: int | None
     exerciseClass: bool | None
-    startUnit: int
-    endUnit: int
+    startUnit: int | None
+    endUnit: int | None
 
 
 class ScheduleGroupListItem(BaseModel):
-    id: int
-    lessonId: int
-    no: int
-    limitCount: int
-    stdCount: int
-    actualPeriods: float
-    default: bool
+    id: int | None
+    lessonId: int | None
+    no: int | None
+    limitCount: int | None
+    stdCount: int | None
+    actualPeriods: float | None
+    default: bool | None
 
 
-class Result(BaseModel):
-    lessonList: list[LessonListItem]
-    scheduleList: list[ScheduleListItem]
-    scheduleGroupList: list[ScheduleGroupListItem]
+class ScheduleTableResult(BaseModel):
+    lessonList: list[LessonListItem] | None
+    scheduleList: list[ScheduleListItem] | None
+    scheduleGroupList: list[ScheduleGroupListItem] | None
 
 
-class Model(BaseModel):
-    result: Result
+class JwWsScheduleTableDatumResponse(BaseModel):
+    result: ScheduleTableResult | None

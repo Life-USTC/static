@@ -5,10 +5,10 @@ from bs4 import BeautifulSoup
 
 from ..models import Course, Lecture
 from ..models.api.jw_for_std_lesson_search_semester import (
-    Model as JWLessonSearchModel,
+    JwForStdLessonSearchSemesterResponse,
 )
 from ..models.api.jw_ws_schedule_table_datum import (
-    Model as JWScheduleTableDatumModel,
+    JwWsScheduleTableDatumResponse,
 )
 from .auth import RequestSession
 from .tools import cache_dir_from_url, compose_start_end, join_nonempty, save_json
@@ -149,36 +149,55 @@ async def fetch_jw_courses_json(session: RequestSession, semester_id: str) -> di
 
 
 def parse_jw_courses(payload: dict) -> list[Course]:
-    parsed = JWLessonSearchModel.model_validate(payload)
+    parsed = JwForStdLessonSearchSemesterResponse.model_validate(payload)
 
     result = []
-    for lesson_item in parsed.data:
-        teacher_names = [ta.person.nameZh for ta in lesson_item.teacherAssignmentList]
+    for lesson_item in parsed.data or []:
+        if not lesson_item:
+            continue
+        teacher_names = [
+            ta.person.nameZh
+            for ta in (lesson_item.teacherAssignmentList or [])
+            if ta and ta.person and ta.person.nameZh
+        ]
         teachers = join_nonempty(teacher_names)
         course_type_name = (
             lesson_item.courseType.nameZh if lesson_item.courseType else ""
         )
+        course = lesson_item.course
         result.append(
             Course(
-                id=lesson_item.id,
-                name=lesson_item.course.nameZh or "",
-                courseCode=lesson_item.course.code,
-                lessonCode=lesson_item.code,
+                id=lesson_item.id or 0,
+                name=course.nameZh if course and course.nameZh else "",
+                courseCode=course.code if course and course.code else "",
+                lessonCode=lesson_item.code or "",
                 teacherName=teachers,
                 lectures=[],
                 exams=[],
                 dateTimePlacePersonText=lesson_item.scheduleText.dateTimePlacePersonText.textZh
-                or None,
+                if lesson_item.scheduleText
+                and lesson_item.scheduleText.dateTimePlacePersonText
+                and lesson_item.scheduleText.dateTimePlacePersonText.textZh
+                else None,
                 courseType=course_type_name or None,
                 courseGradation=lesson_item.courseGradation.nameZh
-                if lesson_item.courseGradation
+                if lesson_item.courseGradation and lesson_item.courseGradation.nameZh
                 else "",
-                courseCategory=lesson_item.courseCategory.nameZh,
-                educationType=lesson_item.education.nameZh,
-                classType=lesson_item.classType.nameZh,
-                openDepartment=lesson_item.openDepartment.simpleNameZh,
+                courseCategory=lesson_item.courseCategory.nameZh
+                if lesson_item.courseCategory and lesson_item.courseCategory.nameZh
+                else "",
+                educationType=lesson_item.education.nameZh
+                if lesson_item.education and lesson_item.education.nameZh
+                else "",
+                classType=lesson_item.classType.nameZh
+                if lesson_item.classType and lesson_item.classType.nameZh
+                else "",
+                openDepartment=lesson_item.openDepartment.simpleNameZh
+                if lesson_item.openDepartment
+                and lesson_item.openDepartment.simpleNameZh
+                else "",
                 description=lesson_item.introduction or "",
-                credit=lesson_item.credits,
+                credit=lesson_item.credits or 0,
                 additionalInfo={},
             )
         )
@@ -202,24 +221,26 @@ def parse_jw_schedule_table(
     course_list: list[Course], payload: dict, *, cache_url: str | None = None
 ) -> list[Course]:
     logger = logging.getLogger(__name__)
-    parsed = JWScheduleTableDatumModel.model_validate(payload)
+    parsed = JwWsScheduleTableDatumResponse.model_validate(payload)
+    if not parsed.result:
+        return course_list
 
     if cache_url:
         for course in course_list:
             save_course_json: dict = {"result": {}}
             save_course_json["result"]["lessonList"] = [
                 item.model_dump()
-                for item in parsed.result.lessonList
+                for item in (parsed.result.lessonList or [])
                 if item.id == course.id
             ]
             save_course_json["result"]["scheduleList"] = [
                 item.model_dump()
-                for item in parsed.result.scheduleList
+                for item in (parsed.result.scheduleList or [])
                 if item.lessonId == course.id
             ]
             save_course_json["result"]["scheduleGroupList"] = [
                 item.model_dump()
-                for item in parsed.result.scheduleGroupList
+                for item in (parsed.result.scheduleGroupList or [])
                 if item.lessonId == course.id
             ]
 
@@ -228,7 +249,15 @@ def parse_jw_schedule_table(
                 cache_dir_from_url(cache_url) / f"{course.id}.json",
             )
 
-    for schedule_item in parsed.result.scheduleList:
+    for schedule_item in parsed.result.scheduleList or []:
+        if not schedule_item:
+            continue
+        if schedule_item.lessonId is None:
+            continue
+        if schedule_item.startTime is None or schedule_item.endTime is None:
+            continue
+        if not schedule_item.date:
+            continue
         course = next(
             (course for course in course_list if course.id == schedule_item.lessonId),
             None,
@@ -242,7 +271,7 @@ def parse_jw_schedule_table(
 
         location = (
             schedule_item.room.nameZh
-            if schedule_item.room
+            if schedule_item.room and schedule_item.room.nameZh
             else schedule_item.customPlace or ""
         )
 

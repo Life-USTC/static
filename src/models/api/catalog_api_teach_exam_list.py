@@ -10,98 +10,98 @@ from pydantic import BaseModel, RootModel
 
 
 class ExamBatch(BaseModel):
-    id: int
-    name: str
+    id: int | None
+    name: str | None
 
 
 class ExamRoom(BaseModel):
-    room: str
-    count: int
+    room: str | None
+    count: int | None
 
 
 class ClassType(BaseModel):
-    en: str
-    cn: str
+    en: str | None
+    cn: str | None
 
 
 class Course(BaseModel):
-    id: int
-    code: str
-    credits: float
-    en: str
-    cn: str
+    id: int | None
+    code: str | None
+    credits: float | None
+    en: str | None
+    cn: str | None
 
 
 class CourseCategory(BaseModel):
     en: str | None
-    cn: str
+    cn: str | None
 
 
 class CourseGradation(BaseModel):
-    en: str
-    cn: str
+    en: str | None
+    cn: str | None
 
 
 class CourseType(BaseModel):
-    en: str
-    cn: str
+    en: str | None
+    cn: str | None
 
 
 class Education(BaseModel):
-    en: str
-    cn: str
+    en: str | None
+    cn: str | None
 
 
 class OpenDepartment(BaseModel):
-    code: str
-    en: str
-    cn: str
+    code: str | None
+    en: str | None
+    cn: str | None
 
 
 class TeacherAssignmentListItem(BaseModel):
-    id: int
+    id: int | None
     en: str | None
-    cn: str
+    cn: str | None
 
 
 class Lesson(BaseModel):
-    actualPeriods: int
-    classType: ClassType
-    code: str
+    actualPeriods: int | None
+    classType: ClassType | None
+    code: str | None
     compulsory: bool | None
-    course: Course
-    courseCategory: CourseCategory
-    courseGradation: CourseGradation
-    courseType: CourseType
-    education: Education
-    graduateAndPostgraduate: bool
-    id: int
-    openDepartment: OpenDepartment
-    teacherAssignmentList: list[TeacherAssignmentListItem]
+    course: Course | None
+    courseCategory: CourseCategory | None
+    courseGradation: CourseGradation | None
+    courseType: CourseType | None
+    education: Education | None
+    graduateAndPostgraduate: bool | None
+    id: int | None
+    openDepartment: OpenDepartment | None
+    teacherAssignmentList: list[TeacherAssignmentListItem] | None
 
 
 class Monitor(BaseModel):
-    id: int
+    id: int | None
     en: str | None
-    cn: str
+    cn: str | None
 
 
-class ModelItem(BaseModel):
-    id: int
-    examType: int
-    startTime: int
-    endTime: int
-    examBatch: ExamBatch
-    examDate: str
-    examRooms: list[ExamRoom]
-    examTakeCount: int
-    examMode: str
-    lesson: Lesson
-    monitors: list[Monitor]
-    spvisors: list[Any]
+class TeachExamListItem(BaseModel):
+    id: int | None
+    examType: int | None
+    startTime: int | None
+    endTime: int | None
+    examBatch: ExamBatch | None
+    examDate: str | None
+    examRooms: list[ExamRoom] | None
+    examTakeCount: int | None
+    examMode: str | None
+    lesson: Lesson | None
+    monitors: list[Monitor] | None
+    spvisors: list[Any] | None
     grades: str | None
     adminclasseNames: str | None
 
 
-class Model(RootModel[list[ModelItem]]):
-    root: list[ModelItem]
+class TeachExamListResponse(RootModel[list[TeachExamListItem] | None]):
+    root: list[TeachExamListItem] | None

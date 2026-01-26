@@ -12,10 +12,10 @@ class DateTimePlacePersonText(BaseModel):
 
 
 class Course(BaseModel):
-    id: int
-    code: str
-    cn: str
-    en: str
+    id: int | None
+    code: str | None
+    cn: str | None
+    en: str | None
 
 
 class CourseType(BaseModel):
@@ -24,12 +24,12 @@ class CourseType(BaseModel):
 
 
 class CourseGradation(BaseModel):
-    cn: str
-    en: str
+    cn: str | None
+    en: str | None
 
 
 class CourseCategory(BaseModel):
-    cn: str
+    cn: str | None
     en: str | None
 
 
@@ -39,20 +39,20 @@ class CourseClassify(BaseModel):
 
 
 class OpenDepartment(BaseModel):
-    college: bool
-    code: str
-    cn: str
-    en: str
+    college: bool | None
+    code: str | None
+    cn: str | None
+    en: str | None
 
 
 class Campus(BaseModel):
-    cn: str
-    en: str
+    cn: str | None
+    en: str | None
 
 
 class ExamMode(BaseModel):
-    cn: str
-    en: str
+    cn: str | None
+    en: str | None
 
 
 class TeachLang(BaseModel):
@@ -61,51 +61,51 @@ class TeachLang(BaseModel):
 
 
 class Education(BaseModel):
-    cn: str
-    en: str
+    cn: str | None
+    en: str | None
 
 
 class ClassType(BaseModel):
-    cn: str
-    en: str
+    cn: str | None
+    en: str | None
 
 
 class TeacherAssignmentListItem(BaseModel):
-    cn: str
+    cn: str | None
     en: str | None
-    departmentCode: str
+    departmentCode: str | None
 
 
 class AdminClass(BaseModel):
-    cn: str
+    cn: str | None
     en: str | None
 
 
-class ModelItem(BaseModel):
-    id: int
-    code: str
-    period: int
+class TeachLessonListItem(BaseModel):
+    id: int | None
+    code: str | None
+    period: int | None
     periodsPerWeek: float | None
-    credits: float
+    credits: float | None
     dateTimePlaceText: str | None
-    dateTimePlacePersonText: DateTimePlacePersonText
-    stdCount: int
-    limitCount: int
-    graduateAndPostgraduate: bool
-    course: Course
-    courseType: CourseType
-    courseGradation: CourseGradation
-    courseCategory: CourseCategory
-    courseClassify: CourseClassify
-    openDepartment: OpenDepartment
-    campus: Campus
-    examMode: ExamMode
-    teachLang: TeachLang
-    education: Education
-    classType: ClassType
-    teacherAssignmentList: list[TeacherAssignmentListItem]
-    adminClasses: list[AdminClass]
+    dateTimePlacePersonText: DateTimePlacePersonText | None
+    stdCount: int | None
+    limitCount: int | None
+    graduateAndPostgraduate: bool | None
+    course: Course | None
+    courseType: CourseType | None
+    courseGradation: CourseGradation | None
+    courseCategory: CourseCategory | None
+    courseClassify: CourseClassify | None
+    openDepartment: OpenDepartment | None
+    campus: Campus | None
+    examMode: ExamMode | None
+    teachLang: TeachLang | None
+    education: Education | None
+    classType: ClassType | None
+    teacherAssignmentList: list[TeacherAssignmentListItem] | None
+    adminClasses: list[AdminClass] | None
 
 
-class Model(RootModel[list[ModelItem]]):
-    root: list[ModelItem]
+class TeachLessonListResponse(RootModel[list[TeachLessonListItem] | None]):
+    root: list[TeachLessonListItem] | None
