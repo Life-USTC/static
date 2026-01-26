@@ -1,12 +1,19 @@
+import asyncio
 import logging
 
+from bs4 import BeautifulSoup
+
 from ..models import Course, Lecture
-from .auth import RequestSession
-from .tools import (
-    cache_dir_from_url,
-    compose_start_end,
-    save_json,
+from ..models.api.jw_for_std_lesson_search_semester import (
+    Model as JWLessonSearchModel,
 )
+from ..models.api.jw_ws_schedule_table_datum import (
+    Model as JWScheduleTableDatumModel,
+)
+from .auth import RequestSession
+from .tools import cache_dir_from_url, compose_start_end, join_nonempty, save_json
+
+_jw_user_id_cache: dict[int, str] = {}
 
 indexStartTimes: dict[int, int] = {
     1: 7 * 60 + 50,
@@ -72,58 +79,172 @@ def cleanLectures(lectures: list[Lecture]) -> list[Lecture]:
     return result
 
 
-async def update_lectures(
-    session: RequestSession, course_list: list[Course]
-) -> list[Course]:
-    logger = logging.getLogger(__name__)
+async def _get_jw_user_id(session: RequestSession) -> str:
+    if _jw_user_id_cache:
+        return list(_jw_user_id_cache.values())[0]
 
+    url = "https://jw.ustc.edu.cn/for-std/course-select"
+    r = await session.get(url=url)
+    final_url = getattr(r, "url", "")
+    user_id = str(final_url).split("/")[-1]
+    if not user_id.isnumeric():
+        raise ValueError(f"Failed to get jw user id from url: {final_url}")
+
+    _jw_user_id_cache[id(session)] = user_id
+    return user_id
+
+
+async def _get_jw_semester_options(
+    session: RequestSession, user_id: str
+) -> list[tuple[str, str]]:
+    index_url = f"https://jw.ustc.edu.cn/for-std/lesson-search/index/{user_id}"
+    r = await session.get(url=index_url)
+    html = await r.text()
+    soup = BeautifulSoup(html, "html.parser")
+    options = soup.select("select#semester option")
+    if not options:
+        raise ValueError("Failed to find semester options from jw")
+
+    result = []
+    for option in options:
+        raw_value = option.get("value", "")
+        if isinstance(raw_value, list):
+            raw_value = raw_value[0] if raw_value else ""
+        if raw_value is None:
+            raw_value = ""
+        semester_id = str(raw_value).strip()
+        semester_name = option.text.strip()
+        if semester_id and semester_name:
+            result.append((semester_id, semester_name))
+    return result
+
+
+async def fetch_jw_courses_json(session: RequestSession, semester_id: str) -> dict:
+    await asyncio.sleep(10)
+    user_id = await _get_jw_user_id(session=session)
+    query = (
+        "courseCodeLike=&codeLike=&educationAssoc=&courseNameZhLike=&teacherNameLike=&"
+        "schedulePlace=&classCodeLike=&courseTypeAssoc=&classTypeAssoc=&campusAssoc=&"
+        "teachLangAssoc=&roomTypeAssoc=&examModeAssoc=&requiredPeriodInfo.totalGte=&"
+        "requiredPeriodInfo.totalLte=&requiredPeriodInfo.weeksGte=&requiredPeriodInfo.weeksLte=&"
+        "requiredPeriodInfo.periodsPerWeekGte=&requiredPeriodInfo.periodsPerWeekLte=&"
+        "limitCountGte=&limitCountLte=&majorAssoc=&majorDirectionAssoc=&"
+        "queryPage__=1%2C100000"
+    )
+    url = (
+        "https://jw.ustc.edu.cn/for-std/lesson-search/semester/"
+        + semester_id
+        + "/search/"
+        + user_id
+        + "?"
+        + query
+    )
+    headers = {
+        "accept": "application/json, text/javascript, */*; q=0.01",
+        "x-requested-with": "XMLHttpRequest",
+        "referer": f"https://jw.ustc.edu.cn/for-std/lesson-search/index/{user_id}",
+    }
+
+    return await session.get_json(url=url, headers=headers)
+
+
+def parse_jw_courses(payload: dict) -> list[Course]:
+    parsed = JWLessonSearchModel.model_validate(payload)
+
+    result = []
+    for lesson_item in parsed.data:
+        teacher_names = [ta.person.nameZh for ta in lesson_item.teacherAssignmentList]
+        teachers = join_nonempty(teacher_names)
+        course_type_name = (
+            lesson_item.courseType.nameZh if lesson_item.courseType else ""
+        )
+        result.append(
+            Course(
+                id=lesson_item.id,
+                name=lesson_item.course.nameZh or "",
+                courseCode=lesson_item.course.code,
+                lessonCode=lesson_item.code,
+                teacherName=teachers,
+                lectures=[],
+                exams=[],
+                dateTimePlacePersonText=lesson_item.scheduleText.dateTimePlacePersonText.textZh
+                or None,
+                courseType=course_type_name or None,
+                courseGradation=lesson_item.courseGradation.nameZh
+                if lesson_item.courseGradation
+                else "",
+                courseCategory=lesson_item.courseCategory.nameZh,
+                educationType=lesson_item.education.nameZh,
+                classType=lesson_item.classType.nameZh,
+                openDepartment=lesson_item.openDepartment.simpleNameZh,
+                description=lesson_item.introduction or "",
+                credit=lesson_item.credits,
+                additionalInfo={},
+            )
+        )
+    return result
+
+
+async def get_courses(session: RequestSession, semester_id: str) -> list[Course]:
+    payload = await fetch_jw_courses_json(session=session, semester_id=semester_id)
+    return parse_jw_courses(payload)
+
+
+async def fetch_jw_schedule_table_json(
+    session: RequestSession, course_list: list[Course]
+) -> dict:
     url = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
     course_id_list = [str(course.id) for course in course_list]
+    return await session.post_json(url=url, data={"lessonIds": course_id_list})
 
-    json = await session.post_json(url=url, data={"lessonIds": course_id_list})
 
-    for course in course_list:
-        course_json = {}
-        course_json["result"] = {}
-        course_json["result"]["lessonList"] = [
-            item for item in json["result"]["lessonList"] if item["id"] == course.id
-        ]
-        course_json["result"]["scheduleList"] = [
-            item
-            for item in json["result"]["scheduleList"]
-            if item["lessonId"] == course.id
-        ]
-        course_json["result"]["scheduleGroupList"] = [
-            item
-            for item in json["result"]["scheduleGroupList"]
-            if item["lessonId"] == course.id
-        ]
+def parse_jw_schedule_table(
+    course_list: list[Course], payload: dict, *, cache_url: str | None = None
+) -> list[Course]:
+    logger = logging.getLogger(__name__)
+    parsed = JWScheduleTableDatumModel.model_validate(payload)
 
-        save_json(
-            course_json,
-            cache_dir_from_url(url) / f"{course.id}.json",
+    if cache_url:
+        for course in course_list:
+            save_course_json: dict = {"result": {}}
+            save_course_json["result"]["lessonList"] = [
+                item.model_dump()
+                for item in parsed.result.lessonList
+                if item.id == course.id
+            ]
+            save_course_json["result"]["scheduleList"] = [
+                item.model_dump()
+                for item in parsed.result.scheduleList
+                if item.lessonId == course.id
+            ]
+            save_course_json["result"]["scheduleGroupList"] = [
+                item.model_dump()
+                for item in parsed.result.scheduleGroupList
+                if item.lessonId == course.id
+            ]
+
+            save_json(
+                save_course_json,
+                cache_dir_from_url(cache_url) / f"{course.id}.json",
+            )
+
+    for schedule_item in parsed.result.scheduleList:
+        course = next(
+            (course for course in course_list if course.id == schedule_item.lessonId),
+            None,
         )
+        if not course:
+            continue
 
-    json = json["result"]
-
-    for schedule_json in json["scheduleList"]:
-        course = [
-            course for course in course_list if course.id == schedule_json["lessonId"]
-        ][0]
-
-        startHHMM = int(schedule_json["startTime"])
-        endHHMM = int(schedule_json["endTime"])
-        startDate, endDate = compose_start_end(
-            schedule_json["date"], startHHMM, endHHMM
-        )
+        startHHMM = int(schedule_item.startTime)
+        endHHMM = int(schedule_item.endTime)
+        startDate, endDate = compose_start_end(schedule_item.date, startHHMM, endHHMM)
 
         location = (
-            schedule_json["room"]["nameZh"]
-            if schedule_json["room"]
-            else schedule_json["customPlace"]
+            schedule_item.room.nameZh
+            if schedule_item.room
+            else schedule_item.customPlace or ""
         )
-        if not location:
-            location = ""
 
         startIndex = findNearestIndex(
             int(startHHMM // 100) * 60 + int(startHHMM % 100), indexStartTimes
@@ -137,10 +258,8 @@ async def update_lectures(
             endDate=endDate,
             name=course.name,
             location=location,
-            teacherName=(
-                schedule_json["personName"] if schedule_json["personName"] else ""
-            ),
-            periods=schedule_json["periods"] if schedule_json["periods"] else 0,
+            teacherName=schedule_item.personName if schedule_item.personName else "",
+            periods=schedule_item.periods if schedule_item.periods else 0,
             additionalInfo={},
             startIndex=startIndex,
             endIndex=endIndex,
@@ -148,13 +267,20 @@ async def update_lectures(
             endHHMM=endHHMM,
         )
 
-        for course in course_list:
-            if course.id == schedule_json["lessonId"]:
-                course.lectures.append(lecture)
-                break
+        course.lectures.append(lecture)
 
     for course in course_list:
         course.lectures = cleanLectures(course.lectures)
         logger.info(f"course {course.id} lectures count {len(course.lectures)}")
 
     return course_list
+
+
+async def update_lectures(
+    session: RequestSession, course_list: list[Course]
+) -> list[Course]:
+    url = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
+    payload = await fetch_jw_schedule_table_json(
+        session=session, course_list=course_list
+    )
+    return parse_jw_schedule_table(course_list, payload, cache_url=url)

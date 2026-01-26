@@ -1,95 +1,112 @@
 import asyncio
 
 from ..models import Course, Exam, Semester
-from .auth import RequestSession
-from .tools import (
-    compose_start_end,
-    join_nonempty,
-    raw_date_to_unix_timestamp,
+from ..models.api.catalog_api_teach_exam_list import Model as ExamListModel
+from ..models.api.catalog_api_teach_lesson_list_for_teach import (
+    Model as CourseListModel,
 )
+from ..models.api.catalog_api_teach_semester_list import (
+    Model as SemesterListModel,
+)
+from .auth import RequestSession
+from .tools import compose_start_end, join_nonempty, raw_date_to_unix_timestamp
 
 
-async def get_semesters(session: RequestSession) -> list[Semester]:
+async def fetch_semesters_json(session: RequestSession) -> list[dict]:
     url = "https://catalog.ustc.edu.cn/api/teach/semester/list"
+    return await session.get_json(url=url)
 
-    json = await session.get_json(url=url)
+
+def parse_semesters(payload: list[dict]) -> list[Semester]:
+    parsed = SemesterListModel(payload)
 
     result = []
-    for semester_json in json:
+    for item in parsed.root:
         result.append(
             Semester(
-                id=str(semester_json["id"]),
+                id=str(item.id),
                 courses=[],
-                name=semester_json["nameZh"],
-                startDate=raw_date_to_unix_timestamp(semester_json["start"]),
-                endDate=raw_date_to_unix_timestamp(semester_json["end"]),
+                name=item.nameZh,
+                startDate=raw_date_to_unix_timestamp(item.start),
+                endDate=raw_date_to_unix_timestamp(item.end),
             )
         )
     return result
 
 
-async def get_courses(session: RequestSession, semester_id: str) -> list[Course]:
+async def get_semesters(session: RequestSession) -> list[Semester]:
+    payload = await fetch_semesters_json(session=session)
+    return parse_semesters(payload)
+
+
+async def fetch_courses_json(session: RequestSession, semester_id: str) -> list[dict]:
     await asyncio.sleep(10)
     url = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach/" + semester_id
+    return await session.get_json(url=url)
 
-    json = await session.get_json(url=url)
+
+def parse_courses(payload: list[dict]) -> list[Course]:
+    parsed = CourseListModel(payload)
 
     result = []
-    for course_json in json:
-        teacher_name_list = [
-            teacher["cn"] for teacher in course_json["teacherAssignmentList"]
-        ]
-        teachers = join_nonempty(teacher_name_list)
+    for item in parsed.root:
+        teacher_names = [ta.cn for ta in item.teacherAssignmentList]
+        teachers = join_nonempty(teacher_names)
         result.append(
             Course(
-                id=course_json["id"],
-                name=course_json["course"]["cn"],
-                courseCode=course_json["course"]["code"],
-                lessonCode=course_json["code"],
+                id=item.id,
+                name=item.course.cn,
+                courseCode=item.course.code,
+                lessonCode=item.code,
                 teacherName=teachers,
                 lectures=[],
                 exams=[],
-                dateTimePlacePersonText=course_json["dateTimePlacePersonText"]["cn"],
-                courseType=course_json["courseType"]["cn"],
-                courseGradation=course_json["courseGradation"]["cn"],
-                courseCategory=course_json["courseCategory"]["cn"],
-                educationType=course_json["education"]["cn"],
-                classType=course_json["classType"]["cn"],
-                openDepartment=course_json["openDepartment"]["cn"],
+                dateTimePlacePersonText=item.dateTimePlacePersonText.cn,
+                courseType=item.courseType.cn if item.courseType else None,
+                courseGradation=item.courseGradation.cn,
+                courseCategory=item.courseCategory.cn,
+                educationType=item.education.cn,
+                classType=item.classType.cn,
+                openDepartment=item.openDepartment.cn,
                 description="",
-                credit=course_json["credits"],
+                credit=item.credits,
                 additionalInfo={},
             )
         )
     return result
 
 
-async def get_exams(session: RequestSession, semester_id: str) -> dict[int, list[Exam]]:
+async def get_courses(session: RequestSession, semester_id: str) -> list[Course]:
+    payload = await fetch_courses_json(session=session, semester_id=semester_id)
+    return parse_courses(payload)
+
+
+async def fetch_exams_json(session: RequestSession, semester_id: str) -> list[dict]:
     await asyncio.sleep(10)
     url = f"https://catalog.ustc.edu.cn/api/teach/exam/list/{semester_id}"
+    return await session.get_json(url=url)
 
-    json = await session.get_json(url=url)
 
-    result = {}
-    for exam_json in json:
-        room_list = [room["room"] for room in exam_json["examRooms"]]
+def parse_exams(payload: list[dict]) -> dict[int, list[Exam]]:
+    parsed = ExamListModel(payload)
+
+    result: dict[int, list[Exam]] = {}
+    for exam_item in parsed.root:
+        room_list = [er.room for er in exam_item.examRooms]
         location = ", ".join(room_list)
 
-        startHHMM = int(exam_json["startTime"])
-        endHHMM = int(exam_json["endTime"])
-        startDate, endDate = compose_start_end(
-            exam_json["examDate"], startHHMM, endHHMM
-        )
+        startHHMM = exam_item.startTime
+        endHHMM = exam_item.endTime
+        startDate, endDate = compose_start_end(exam_item.examDate, startHHMM, endHHMM)
 
         examType = "Unknown"
-        if exam_json["examType"] == 1:
+        if exam_item.examType == 1:
             examType = "期中考试"
-        elif exam_json["examType"] == 2:
+        elif exam_item.examType == 2:
             examType = "期末考试"
-        examMode = exam_json["examMode"]
 
-        name = exam_json["lesson"]["course"]["cn"]
-        id: int = exam_json["lesson"]["id"]
+        name = exam_item.lesson.course.cn
+        lesson_id = exam_item.lesson.id
 
         exam = Exam(
             startDate=startDate,
@@ -99,12 +116,17 @@ async def get_exams(session: RequestSession, semester_id: str) -> dict[int, list
             examType=examType,
             startHHMM=startHHMM,
             endHHMM=endHHMM,
-            examMode=examMode,
+            examMode=exam_item.examMode,
             additionalInfo={},
         )
-        if id in result:
-            result[id].append(exam)
+        if lesson_id in result:
+            result[lesson_id].append(exam)
         else:
-            result[id] = [exam]
+            result[lesson_id] = [exam]
 
     return result
+
+
+async def get_exams(session: RequestSession, semester_id: str) -> dict[int, list[Exam]]:
+    payload = await fetch_exams_json(session=session, semester_id=semester_id)
+    return parse_exams(payload)

@@ -39,9 +39,9 @@ async def get_and_clean_feed(url: str, path_to_save: Path):
         try:
             date_raw = str(getattr(entry, "published", ""))
             try:
-                date = datetime.datetime.strptime(date_raw, "%a, %d %b %Y %H:%M:%S %Z")
-            except ValueError:
                 date = datetime.datetime.strptime(date_raw, "%a, %d %b %Y %H:%M:%S %z")
+            except ValueError:
+                date = datetime.datetime.strptime(date_raw, "%a, %d %b %Y %H:%M:%S %Z")
 
             description = handler.handle(str(getattr(entry, "description", "")))
 

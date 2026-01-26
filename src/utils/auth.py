@@ -41,6 +41,8 @@ class RequestSession:
             ),
             "max_retries": kwargs.get("max_retries", self.max_retries),
         }
+        if "headers" in kwargs and kwargs["headers"] is not None:
+            params["headers"] = kwargs["headers"]
 
         self.logger.info(f"GET {url}")
         r = await self.page.request.get(**params)
@@ -58,6 +60,8 @@ class RequestSession:
             ),
             "max_retries": kwargs.get("max_retries", self.max_retries),
         }
+        if "headers" in kwargs and kwargs["headers"] is not None:
+            params["headers"] = kwargs["headers"]
 
         self.logger.info(f"POST {url}")
         r = await self.page.request.post(**params)
