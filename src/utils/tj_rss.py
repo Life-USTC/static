@@ -18,8 +18,14 @@ title = "体育教学中心"
 description = "体育教学中心，http://www.tj.ustc.edu.cn"
 
 headers = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36 Edg/113.0.1774.57",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,"
+        "image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+    ),
+    "user-agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36 Edg/113.0.1774.57"
+    ),
 }
 
 
@@ -79,7 +85,7 @@ def tj_ustc_RSS(output_dir: Path | str):
     fg.description(description)
     fg.link(href="http://www.tj.ustc.edu.cn/tzgg/list.htm", rel="alternate")
     fg.language("zh-CN")
-    fg.lastBuildDate(datetime.datetime.utcnow().astimezone(tz=datetime.timezone.utc))
+    fg.lastBuildDate(datetime.datetime.utcnow().astimezone(tz=datetime.UTC))
     fg.ttl(5)
 
     for item in items:

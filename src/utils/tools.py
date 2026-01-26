@@ -1,10 +1,12 @@
+from collections.abc import Iterable
 from datetime import datetime
 from json import dump
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
 from pydantic.json import pydantic_encoder
 from pytz import timezone
-from typing import Any, Iterable, Tuple
-from urllib.parse import urlparse
 
 tz = timezone("Asia/Shanghai")
 
@@ -29,7 +31,7 @@ def save_json(obj: Any, path: Path) -> None:
         dump(obj, f, default=pydantic_encoder, ensure_ascii=False)
 
 
-def compose_start_end(date_str: str, start_hhmm: int, end_hhmm: int) -> Tuple[int, int]:
+def compose_start_end(date_str: str, start_hhmm: int, end_hhmm: int) -> tuple[int, int]:
     def compose_datetime(date_str: str, hhmm: int) -> int:
         base = raw_date_to_unix_timestamp(date_str)
         return base + int(hhmm // 100) * 3600 + int(hhmm % 100) * 60
@@ -48,7 +50,7 @@ def cache_dir_from_url(url: str) -> Path:
         "jw.ustc.edu.cn": "jw",
     }
 
-    if host in host_abbrs.keys():
+    if host in host_abbrs:
         host = host_abbrs[host]
 
     return Path("build") / "cache" / host / path

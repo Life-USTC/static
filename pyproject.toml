@@ -28,7 +28,34 @@ dev = [
     "jupyter>=1.1.1",
     "notebook>=7.4.7",
     "pandas>=2.3.3",
+    "ruff>=0.14.14",
 ]
 
 [project.scripts]
 static-build = "main:main"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+extend-exclude = ["build", "static"]
+lint.select = [
+    "B",
+    "E",
+    "F",
+    "I",
+    "N",
+    "SIM",
+    "UP",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/models/*.py" = ["N815"]
+"src/utils/catalog.py" = ["N806"]
+"src/utils/jw.py" = ["N802", "N806", "N816"]
+"src/utils/tj_rss.py" = ["N802"]
+"tools/bus_data_gen.py" = ["N816"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

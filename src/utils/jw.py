@@ -1,13 +1,12 @@
 import logging
 
 from ..models import Course, Lecture
+from .auth import RequestSession
 from .tools import (
     cache_dir_from_url,
     compose_start_end,
     save_json,
 )
-from .auth import RequestSession
-
 
 indexStartTimes: dict[int, int] = {
     1: 7 * 60 + 50,
@@ -55,9 +54,9 @@ def cleanLectures(lectures: list[Lecture]) -> list[Lecture]:
     for lecture in lectures:
         for r in result:
             if lecture.startDate >= r.startDate and lecture.endDate <= r.endDate:
-                if not lecture.teacherName in r.teacherName:
+                if lecture.teacherName not in r.teacherName:
                     r.teacherName += "," + lecture.teacherName
-                if not lecture.location in r.location:
+                if lecture.location not in r.location:
                     r.location += "," + lecture.location
                 break
             elif lecture.endDate == r.startDate:

@@ -1,21 +1,21 @@
-import os
 import logging
-from typing import Optional, Any, Dict
-from pathlib import Path
+import os
 from contextlib import suppress
-
-from pyotp import TOTP, parse_uri
 from enum import Enum
+from pathlib import Path
+from typing import Any
+
 from dotenv import load_dotenv
 from patchright.async_api import (
-    async_playwright,
-    Page,
     Browser,
     BrowserContext,
+    Page,
     Playwright,
+    async_playwright,
 )
+from pyotp import TOTP, parse_uri
 
-from .tools import save_json, cache_dir_from_url
+from .tools import cache_dir_from_url, save_json
 
 
 class RequestSession:
@@ -33,7 +33,7 @@ class RequestSession:
         self.logger = logging.getLogger(__name__)
 
     async def get(self, url: str, **kwargs: Any):
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "url": url,
             "timeout": kwargs.get("timeout", self.timeout_ms),
             "fail_on_status_code": kwargs.get(
@@ -49,7 +49,7 @@ class RequestSession:
         return r
 
     async def post(self, url: str, data: Any = None, **kwargs: Any):
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "url": url,
             "data": data,
             "timeout": kwargs.get("timeout", self.timeout_ms),
@@ -87,14 +87,14 @@ class RequestSession:
 class USTCSession:
     """Context manager for USTC authentication and returns a RequestSession"""
 
-    def __init__(self, headless: bool = True, proxy: Optional[dict] = None):
+    def __init__(self, headless: bool = True, proxy: dict | None = None):
         self.headless = headless
         self.proxy = proxy
         self.playwright: Playwright
         self.browser: Browser
         self.context: BrowserContext
         self.page: Page
-        self.totp: Optional[TOTP] = None
+        self.totp: TOTP | None = None
         self.logger = logging.getLogger(__name__)
 
         load_dotenv()
@@ -103,7 +103,8 @@ class USTCSession:
         self.password = os.getenv("USTC_PASSPORT_PASSWORD", "")
         if self.username == "" or self.password == "":
             raise ValueError(
-                "USTC_PASSPORT_USERNAME and USTC_PASSPORT_PASSWORD must be set in environment variables"
+                "USTC_PASSPORT_USERNAME and USTC_PASSPORT_PASSWORD must be set in "
+                "environment variables"
             )
         self.totp_url = os.getenv("USTC_PASSPORT_TOTP_URL", "")
 
@@ -251,7 +252,7 @@ class USTCSession:
                 self.logger.error(f"login error={e}")
                 return False
 
-        self.logger.info(f"login failed")
+        self.logger.info("login failed")
         return False
 
     async def _after_login(self):

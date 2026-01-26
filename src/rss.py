@@ -1,11 +1,12 @@
+import datetime
+from pathlib import Path
+from typing import cast
+
+import feedgenerator
 import feedparser
 import html2text
 import yaml
-from pathlib import Path
 from tqdm import tqdm
-import feedgenerator
-import datetime
-from typing import cast
 
 from .utils.tj_rss import tj_ustc_RSS
 from .utils.tools import BUILD_DIR, RSS_CONFIG_PATH
@@ -58,7 +59,7 @@ async def get_and_clean_feed(url: str, path_to_save: Path):
 
 
 async def make_rss() -> None:
-    with open(RSS_CONFIG_PATH, "r") as f:
+    with open(RSS_CONFIG_PATH) as f:
         config = yaml.safe_load(f)
 
     rss_path = BUILD_DIR / "rss"

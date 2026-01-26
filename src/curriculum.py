@@ -1,13 +1,13 @@
 import asyncio
-import logging
 from pathlib import Path
+
 from tqdm import tqdm
 
 from .models.course import Course
-from .utils.catalog import get_semesters, get_courses, get_exams
+from .utils.auth import RequestSession, USTCSession
+from .utils.catalog import get_courses, get_exams, get_semesters
 from .utils.jw import update_lectures
-from .utils.tools import save_json, BUILD_DIR
-from .utils.auth import USTCSession, RequestSession
+from .utils.tools import BUILD_DIR, save_json
 
 
 async def fetch_semester(
@@ -36,7 +36,7 @@ async def fetch_semester(
             exams = {}
 
         for course in incomplete_courses:
-            if course.id in exams.keys():
+            if course.id in exams:
                 course.exams = exams[course.id]
 
     sem = asyncio.Semaphore(50)

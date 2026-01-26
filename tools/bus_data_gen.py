@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+
 import jsonpickle
 
 
@@ -34,14 +34,14 @@ class Route:
 
 
 class RouteSchedule:
-    def __init__(self, id: int, route: Route, time: list[list[Optional[str]]]):
+    def __init__(self, id: int, route: Route, time: list[list[str | None]]):
         self.id = id
         self.route = route
         self.time = time
 
     id: int
     route: Route
-    time: list[list[Optional[str]]]
+    time: list[list[str | None]]
 
 
 class RouteScheduleP:
@@ -311,7 +311,7 @@ data = BusData(
 )
 
 
-def generate_bus_data(output_path: Optional[Path] = None) -> Path:
+def generate_bus_data(output_path: Path | None = None) -> Path:
     data_json = jsonpickle.encode(data, unpicklable=False)
     if output_path is None:
         output_path = (

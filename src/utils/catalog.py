@@ -1,12 +1,12 @@
 import asyncio
 
-from ..models import Semester, Course, Exam
+from ..models import Course, Exam, Semester
+from .auth import RequestSession
 from .tools import (
-    raw_date_to_unix_timestamp,
     compose_start_end,
     join_nonempty,
+    raw_date_to_unix_timestamp,
 )
-from .auth import RequestSession
 
 
 async def get_semesters(session: RequestSession) -> list[Semester]:
