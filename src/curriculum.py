@@ -95,6 +95,8 @@ async def make_curriculum() -> None:
         semesters = await get_semesters(session=session)
         save_json(semesters, curriculum_path / "semesters.json")
 
+        semesters = [semester for semester in semesters if int(semester.id)>=421]
+
         for semester in tqdm(
             semesters,
             position=1,
