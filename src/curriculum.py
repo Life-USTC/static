@@ -38,7 +38,7 @@ async def fetch_semester(
         if course.id in exams:
             course.exams = exams[course.id]
 
-    sem = asyncio.Semaphore(50)
+    sem = asyncio.Semaphore(10)
     progress_bar = tqdm(
         total=len(incomplete_courses),
         position=0,
@@ -46,7 +46,7 @@ async def fetch_semester(
         desc=f"Processing semester id={semester_id}",
     )
     incomplete_courses_chunks = [
-        incomplete_courses[i : i + 50] for i in range(0, len(incomplete_courses), 50)
+        incomplete_courses[i : i + 100] for i in range(0, len(incomplete_courses), 100)
     ]
 
     async def fetch_course_info(
