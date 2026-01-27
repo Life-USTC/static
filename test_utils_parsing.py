@@ -20,19 +20,21 @@ class TestCatalogParsing(unittest.TestCase):
         semesters_dir = CACHE_DIR / "catalog" / "api" / "teach" / "semester"
         for json_file in semesters_dir.glob("*.json"):
             payload = load_json(json_file)
-            semesters = parse_semesters(payload)
+            parse_semesters(payload)
 
     def test_parse_courses(self):
-        courses_dir = CACHE_DIR / "catalog" / "api" / "teach" / "lesson" / "list-for-teach"
+        courses_dir = (
+            CACHE_DIR / "catalog" / "api" / "teach" / "lesson" / "list-for-teach"
+        )
         for json_file in courses_dir.glob("*.json"):
             payload = load_json(json_file)
-            courses = parse_courses(payload)
+            parse_courses(payload)
 
     def test_parse_exams(self):
         exams_dir = CACHE_DIR / "catalog" / "api" / "teach" / "exam" / "list"
         for json_file in exams_dir.glob("*.json"):
             payload = load_json(json_file)
-            exams_by_lesson = parse_exams(payload)
+            parse_exams(payload)
 
 
 class TestJwParsing(unittest.TestCase):
@@ -44,7 +46,7 @@ class TestJwParsing(unittest.TestCase):
                 continue
             for json_file in search_dir.glob("*.json"):
                 payload = load_json(json_file)
-                courses = parse_jw_courses(payload)
+                parse_jw_courses(payload)
 
     def test_parse_jw_schedule_table(self):
         # Loop through all JSON files in the directory
@@ -72,7 +74,7 @@ class TestJwParsing(unittest.TestCase):
                 additionalInfo={},
             )
 
-            updated_courses = parse_jw_schedule_table([course], payload, cache_url=None)
+            parse_jw_schedule_table([course], payload, cache_url=None)
 
 
 if __name__ == "__main__":
