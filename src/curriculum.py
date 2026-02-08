@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 
 from tqdm import tqdm
@@ -8,6 +9,9 @@ from .utils.auth import RequestSession, USTCSession
 from .utils.catalog import get_exams, get_semesters
 from .utils.jw import get_courses, update_lectures
 from .utils.tools import BUILD_DIR, save_json
+
+
+logger = logging.getLogger(__name__)
 
 
 async def fetch_semester(
@@ -23,7 +27,7 @@ async def fetch_semester(
     try:
         incomplete_courses = await get_courses(session=session, semester_id=semester_id)
     except Exception as e:
-        print(f"Failed to get courses for semester {semester_id}: {e}")
+        logger.exception("Failed to get courses for semester %s: %s", semester_id, e)
         return
 
     save_json(incomplete_courses, semester_path / "courses.json")
@@ -31,7 +35,7 @@ async def fetch_semester(
     try:
         exams = await get_exams(session=session, semester_id=semester_id)
     except Exception as e:
-        print(f"Failed to get exams for semester {semester_id}: {e}")
+        logger.exception("Failed to get exams for semester %s: %s", semester_id, e)
         exams = {}
 
     for course in incomplete_courses:
@@ -95,7 +99,7 @@ async def make_curriculum() -> None:
         semesters = await get_semesters(session=session)
         save_json(semesters, curriculum_path / "semesters.json")
 
-        semesters = [semester for semester in semesters if int(semester.id)>=421]
+        semesters = [semester for semester in semesters if int(semester.id) >= 421]
 
         for semester in tqdm(
             semesters,

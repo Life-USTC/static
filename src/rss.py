@@ -1,4 +1,5 @@
 import datetime
+import logging
 from pathlib import Path
 from typing import cast
 
@@ -10,6 +11,9 @@ from tqdm import tqdm
 
 from .utils.tj_rss import tj_ustc_RSS
 from .utils.tools import BUILD_DIR, RSS_CONFIG_PATH
+
+
+logger = logging.getLogger(__name__)
 
 
 async def get_and_clean_feed(url: str, path_to_save: Path):
@@ -52,7 +56,7 @@ async def get_and_clean_feed(url: str, path_to_save: Path):
                 pubdate=date,
             )
         except Exception as e:
-            print(e)
+            logger.exception("Failed to process feed entry: %s", e)
 
     with open(path_to_save, "w") as f:
         new_feed.write(f, "utf-8")
