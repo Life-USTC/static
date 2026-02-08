@@ -29,4 +29,4 @@ def setup_logging(level: int = logging.INFO) -> None:
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     )
     root.addHandler(handler)
-    setattr(root, "_life_ustc_logging_configured", True)
+    root._life_ustc_logging_configured = True

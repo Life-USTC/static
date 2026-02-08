@@ -12,7 +12,6 @@ from tqdm import tqdm
 from .utils.tj_rss import tj_ustc_RSS
 from .utils.tools import BUILD_DIR, RSS_CONFIG_PATH
 
-
 logger = logging.getLogger(__name__)
 
 

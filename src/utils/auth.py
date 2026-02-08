@@ -1,10 +1,11 @@
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
 
 from dotenv import load_dotenv
 from patchright.async_api import (
@@ -312,7 +313,8 @@ class USTCSession:
 
         self.logger.error("login failed after %s attempts", self.login_config.attempts)
         raise RuntimeError(
-            f"Login failed after {self.login_config.attempts} attempts: state machine did not reach success URL"
+            f"Login failed after {self.login_config.attempts} attempts:"
+            "state machine did not reach success URL"
         )
 
     async def _run_login_attempt(self, attempt: int) -> bool:

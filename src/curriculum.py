@@ -10,7 +10,6 @@ from .utils.catalog import get_exams, get_semesters
 from .utils.jw import get_courses, update_lectures
 from .utils.tools import BUILD_DIR, save_json
 
-
 logger = logging.getLogger(__name__)
 
 
