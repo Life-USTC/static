@@ -67,7 +67,7 @@ rsA = RouteScheduleP(
     1,
     Route(1, [east, north, west]),
     [
-        (["07:25", None, "07:35"], True),
+        (["07:30", None, "07:40"], True),
         (["09:20", None, "09:30"], False),
         (["09:35", None, "09:45"], False),
         (["11:35", None, "11:45"], True),
@@ -88,7 +88,7 @@ rsB = RouteScheduleP(
     2,
     Route(2, [west, north, east]),
     [
-        (["07:35", None, "07:45"], True),
+        (["07:40", None, "07:50"], True),
         (["09:30", None, "09:40"], False),
         (["09:45", None, "09:55"], False),
         (["11:45", None, "11:55"], True),
@@ -109,10 +109,10 @@ rsC = RouteScheduleP(
     3,
     Route(3, [east, south]),
     [
-        (["07:25", "07:40"], False),
+        (["07:30", "07:45"], True),
         (["08:30", "08:45"], False),
         (["11:35", "11:50"], False),
-        (["11:50", "12:05"], True),
+        (["11:45", "12:00"], True),
         (["12:10", "12:25"], False),
         (["12:35", "12:50"], False),
         (["14:30", "14:45"], False),
@@ -154,12 +154,12 @@ rsE = RouteScheduleP(
     [
         (["07:35", "07:55"], False),
         (["11:35", "11:55"], True),
-        (["12:30", "12:50"], False),
+        (["12:25", "12:45"], True),
         (["17:35", "17:55"], True),
         (["18:00", "18:20"], False),
         (["18:50", "19:10"], True),
         (["20:20", "20:40"], False),
-        (["21:35", "21:55"], True),
+        (["21:25", "21:45"], True),
         (["22:20", "22:40"], False),
     ],
 )
@@ -305,8 +305,8 @@ data = BusData(
     weekend_routes=list(map(lambda x: x.convert(True), [rsA, rsB, rsC, rsD, rsE, rsF]))
     + [rsGweekend, rsHweekend],
     message=Message(
-        message="本表为 2025 秋季学期时间表，来源：蜗壳小道消息",
-        url="https://mp.weixin.qq.com/s/gcjk6H95YSsL_ku4TrrICw",
+        message="本表为 2026 春季学期时间表，来源：蜗壳小道消息",
+        url="https://mp.weixin.qq.com/s/aWF0UA63pQmM5MWiAtTeKg",
     ),
 )
 
