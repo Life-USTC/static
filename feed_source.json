@@ -1,0 +1,147 @@
+{
+  "sources": [
+    {
+      "id": "ustc_home",
+      "locales": {
+        "zh": "校主页"
+      },
+      "url": "https://www.ustc.edu.cn/system/resource/code/rss/rssfeedg.jsp?type=list&treeid=1002&viewid=249541&mode=10&dbname=vsb&owner=1585251974&contentid=221571,221572,221573,221574",
+      "icons": {
+        "sf-symbols": "icloud.square.fill"
+      },
+      "color": "#72C078"
+    },
+    {
+      "id": "ustc_oaa",
+      "locales": {
+        "zh": "教务处"
+      },
+      "url": "https://www.teach.ustc.edu.cn/category/notice/feed",
+      "icons": {
+        "sf-symbols": "person.crop.square.fill.and.at.rectangle"
+      },
+      "color": "#7676D0"
+    },
+    {
+      "id": "life-ustc",
+      "locales": {
+        "zh": "应用通知"
+      },
+      "url": "https://rss.life-ustc.tiankaima.dev/index.xml",
+      "icons": {
+        "sf-symbols": "apps.iphone"
+      },
+      "color": "#4093B7"
+    },
+    {
+      "id": "mp_ustc_official",
+      "locales": {
+        "zh": "中国科大（公众号）"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_2395698621.rss",
+      "icons": {
+        "sf-symbols": "graduationcap"
+      },
+      "color": "#4598C5"
+    },
+    {
+      "id": "mp_ustc_youth_league_committee",
+      "locales": {
+        "zh": "青春科大（公众号）"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3075337667.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#D089B0"
+    },
+    {
+      "id": "mp_ustc_undergraduate_admission_office",
+      "locales": {
+        "zh": "本科招生（公众号）"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3087049624.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#87AC74"
+    },
+    {
+      "id": "mp_ustc_sgy",
+      "locales": {
+        "zh": "少年班学院（公众号）"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3225433605.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#ECB969"
+    },
+    {
+      "id": "mp_ustc_bwc",
+      "locales": {
+        "zh": "保卫处（公众号）"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3570460685.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#5C9CC6"
+    },
+    {
+      "id": "mp_ustc_undergraduate_student_union",
+      "locales": {
+        "zh": "校学生会（公众号）"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3570627689.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#BF5C5C"
+    },
+    {
+      "id": "mp_ustc_graduate_student_union",
+      "locales": {
+        "zh": "研究生会（公众号）"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3095186072.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#C6B75A"
+    },
+    {
+      "id": "tj_ustc",
+      "locales": {
+        "zh": "体育教学中心 (公众号)"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3891688623.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#C6B75A"
+    },
+    {
+      "id": "lug_ustc",
+      "locales": {
+        "zh": "LUG (公众号)"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3013577784.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#C6B75A"
+    },
+    {
+      "id": "choir_ustc",
+      "locales": {
+        "zh": "合唱团 (公众号)"
+      },
+      "url": "https://rss.tiankaima.dev/feed/MP_WXS_3000130385.rss",
+      "icons": {
+        "sf-symbols": "message"
+      },
+      "color": "#C6B75A"
+    }
+  ]
+}
