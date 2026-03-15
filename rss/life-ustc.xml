@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>RSS site for Life @ USTC</title><link>https://static.life-ustc.tiankaima.dev/rss/life-ustc.xml</link><description/><lastBuildDate>Sat, 25 Oct 2025 10:00:00 +0800</lastBuildDate><item><title>迁移回 Life @ USTC</title><link>https://rss.life-ustc.tiankaima.dev/posts/migrate-to-life-ustc/</link><description>Hi, 出于多种因素的考虑，「学在科大 iOS」将迁移回「Life @ USTC」，迁移后原「学在科大」的部分功能可能收到影响。 Life @ USTC 的
+App Store 链接：https://apps.apple.com/us/app/life-ustc/id1660437438 TestFlight
+链接：https://testflight.apple.com/join/HIftOs4Z QQ 反馈群：791050174
+
+</description><pubDate>Sat, 25 Oct 2025 10:00:00 +0800</pubDate></item><item><title>ICP 备案问题 [已解决]</title><link>https://rss.life-ustc.tiankaima.dev/posts/what-to-do-before-icp/</link><description>Update 2024.06.11: 问题已解决，App Store 版本已更新，可以正常下载使用。 App Store 链接 由于 MIIT
+对新上架应用要求备案的政策，在我们解决相关问题之前，请下载并使用 Testflight 进行更新。 Testflight
+链接：https://testflight.apple.com/join/HIftOs4Z
+
+</description><pubDate>Tue, 11 Jun 2024 10:04:00 +0800</pubDate></item></channel></rss>
