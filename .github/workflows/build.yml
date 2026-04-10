@@ -11,7 +11,7 @@ on:
     types: [retry_job]
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -24,21 +24,8 @@ jobs:
         with:
           repository: ${{ github.repository }}
           ref: master
-      - name: Checkout gh-pages
-        uses: actions/checkout@v3
-        with:
-          set-safe-directory: ""
-          repository: ${{ github.repository }}
-          ref: gh-pages
-          path: build
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v6
-      - name: Reset build to initial state
-        run: |
-          cd build
-          git branch -m gh-pages old-gh-pages || true
-          git checkout --orphan gh-pages
-          cd ..
       - name: Install dependencies
         run: |
           uv sync
@@ -56,16 +43,8 @@ jobs:
           uv run python main.py
       - name: Verify SQLite snapshot
         run: test -f build/life-ustc-static.sqlite
-      - name: Publish to gh-pages
-        run: |
-          cd build
-          touch .nojekyll
-          git config user.name "GitHub"
-          git config user.email "noreply@github.com"
-          git add .
-          git commit -m "Update from: ${{ github.sha }}" --allow-empty
-          (git push -f origin gh-pages) || true
-          cd ..
+      - name: Prepare Pages artifact
+        run: touch build/.nojekyll
       - run: |
           rm -rf build/cache
       - name: Upload static files as artifact
