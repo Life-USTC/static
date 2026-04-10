@@ -1,6 +1,5 @@
+import json
 from pathlib import Path
-
-import jsonpickle
 
 
 class Campus:
@@ -312,7 +311,11 @@ data = BusData(
 
 
 def generate_bus_data(output_path: Path | None = None) -> Path:
-    data_json = jsonpickle.encode(data, unpicklable=False)
+    data_json = json.dumps(
+        data,
+        default=lambda value: value.__dict__,
+        ensure_ascii=False,
+    )
     if output_path is None:
         output_path = (
             Path(__file__).resolve().parent.parent / "static" / "bus_data_v3.json"

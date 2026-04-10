@@ -23,7 +23,7 @@ jobs:
       BUILD_CACHE_KEY_PREFIX: build-${{ github.ref_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           repository: ${{ github.repository }}
           ref: master
@@ -36,11 +36,11 @@ jobs:
           restore-keys: |
             ${{ env.BUILD_CACHE_KEY_PREFIX }}-
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
       - name: Install dependencies
         run: |
-          uv sync
-          uv run patchright install chromium
+          uv sync --no-dev
+          uv run --no-dev patchright install chromium
       - name: Select curriculum refresh mode
         id: curriculum-refresh
         run: |
@@ -61,7 +61,7 @@ jobs:
           HTTP_PROXY_USERNAME: ${{ secrets.HTTP_PROXY_USERNAME }}
           HTTP_PROXY_PASSWORD: ${{ secrets.HTTP_PROXY_PASSWORD }}
         run: |
-          uv run python main.py
+          uv run --no-dev python main.py
       - name: Verify SQLite snapshot
         run: test -f build/life-ustc-static.sqlite
       - name: Save generated build cache
@@ -76,8 +76,9 @@ jobs:
           rm -rf build/cache
       - name: Upload static files as artifact
         id: deployment
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
+          include-hidden-files: true
           path: build/
 
   deploy:
