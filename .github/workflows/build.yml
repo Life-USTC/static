@@ -2,7 +2,8 @@ name: Update Repo
 
 on:
   schedule:
-    - cron: "* */6 * * *"
+    - cron: "0 0 * * *"
+    - cron: "0 6,12,18 * * *"
   push:
     branches:
       - master
@@ -18,21 +19,41 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    env:
+      BUILD_CACHE_KEY_PREFIX: build-${{ github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
         with:
           repository: ${{ github.repository }}
           ref: master
+      - name: Restore generated build cache
+        id: restore-build-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build
+          key: ${{ env.BUILD_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ env.BUILD_CACHE_KEY_PREFIX }}-
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v6
       - name: Install dependencies
         run: |
           uv sync
           uv run patchright install chromium
+      - name: Select curriculum refresh mode
+        id: curriculum-refresh
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "0 0 * * *" ]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=window" >> "$GITHUB_OUTPUT"
+          fi
       - name: Run Program
         env:
           TZ: "Asia/Shanghai"
+          LIFE_USTC_CURRICULUM_MODE: ${{ steps.curriculum-refresh.outputs.mode }}
+          LIFE_USTC_CURRICULUM_WINDOW_YEARS: "1"
           USTC_PASSPORT_USERNAME: ${{ secrets.USTC_PASSPORT_USERNAME }}
           USTC_PASSPORT_PASSWORD: ${{ secrets.USTC_PASSPORT_PASSWORD }}
           USTC_PASSPORT_TOTP_URL: ${{ secrets.USTC_PASSPORT_TOTP_URL }}
@@ -43,6 +64,12 @@ jobs:
           uv run python main.py
       - name: Verify SQLite snapshot
         run: test -f build/life-ustc-static.sqlite
+      - name: Save generated build cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: build
+          key: ${{ env.BUILD_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Prepare Pages artifact
         run: touch build/.nojekyll
       - run: |

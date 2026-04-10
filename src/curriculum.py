@@ -1,16 +1,78 @@
 import asyncio
 import logging
+from datetime import date, datetime
 from pathlib import Path
+from typing import Literal
 
 from tqdm import tqdm
 
 from .models.course import Course
+from .models.semester import Semester
 from .utils.auth import RequestSession, USTCSession
 from .utils.catalog import get_exams, get_semesters
 from .utils.jw import get_courses, update_lectures
-from .utils.tools import BUILD_DIR, save_json
+from .utils.tools import BUILD_DIR, raw_date_to_unix_timestamp, save_json, tz
 
 logger = logging.getLogger(__name__)
+
+SemesterPullMode = Literal["all", "window"]
+
+
+def _has_existing_curriculum_data(curriculum_path: Path) -> bool:
+    if not curriculum_path.exists():
+        return False
+
+    for semester_path in curriculum_path.iterdir():
+        if (
+            semester_path.is_dir()
+            and semester_path.name.isdigit()
+            and (semester_path / "courses.json").exists()
+        ):
+            return True
+
+    return False
+
+
+def _shift_year(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        return value.replace(month=2, day=28, year=value.year + years)
+
+
+def _filter_semesters_for_window(
+    semesters: list[Semester], *, window_years: int
+) -> list[Semester]:
+    today = datetime.now(tz).date()
+    window_start = _shift_year(today, -window_years)
+    window_end = _shift_year(today, window_years)
+    window_start_ts = raw_date_to_unix_timestamp(window_start.isoformat())
+    window_end_ts = raw_date_to_unix_timestamp(window_end.isoformat())
+
+    return [
+        semester
+        for semester in semesters
+        if window_start_ts <= semester.startDate <= window_end_ts
+    ]
+
+
+def _select_semesters(
+    semesters: list[Semester],
+    *,
+    mode: SemesterPullMode,
+    window_years: int,
+    curriculum_path: Path,
+) -> list[Semester]:
+    if mode == "all":
+        return semesters
+
+    if _has_existing_curriculum_data(curriculum_path):
+        return _filter_semesters_for_window(semesters, window_years=window_years)
+
+    logger.info(
+        "No cached curriculum data found; falling back to a full semester refresh"
+    )
+    return semesters
 
 
 async def fetch_semester(
@@ -85,7 +147,9 @@ async def fetch_semester(
         await asyncio.gather(*tasks)
 
 
-async def make_curriculum() -> None:
+async def make_curriculum(
+    *, mode: SemesterPullMode = "all", window_years: int = 1
+) -> None:
     curriculum_path = BUILD_DIR / "curriculum"
     course_api_path = BUILD_DIR / "api" / "course"
     if not curriculum_path.exists():
@@ -99,6 +163,19 @@ async def make_curriculum() -> None:
         save_json(semesters, curriculum_path / "semesters.json")
 
         semesters = [semester for semester in semesters if int(semester.id) >= 421]
+        semesters = _select_semesters(
+            semesters,
+            mode=mode,
+            window_years=window_years,
+            curriculum_path=curriculum_path,
+        )
+
+        logger.info(
+            "Refreshing %s semester(s) with mode=%s window_years=%s",
+            len(semesters),
+            mode,
+            window_years,
+        )
 
         for semester in tqdm(
             semesters,
