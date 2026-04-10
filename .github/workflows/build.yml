@@ -54,6 +54,8 @@ jobs:
           HTTP_PROXY_PASSWORD: ${{ secrets.HTTP_PROXY_PASSWORD }}
         run: |
           uv run python main.py
+      - name: Verify SQLite snapshot
+        run: test -f build/life-ustc-static.sqlite
       - name: Publish to gh-pages
         run: |
           cd build

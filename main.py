@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from src import make_curriculum, make_rss
+from tools.sqlite_snapshot import export_sqlite_snapshot
 
 
 def main() -> None:
@@ -46,6 +47,8 @@ def main() -> None:
         await asyncio.gather(*tasks)
 
     asyncio.run(_run())
+    snapshot_path = export_sqlite_snapshot(build_dir)
+    logging.info("Exported SQLite snapshot to %s", snapshot_path)
 
 
 if __name__ == "__main__":
