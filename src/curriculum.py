@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import date, datetime
 from pathlib import Path
@@ -10,7 +11,7 @@ from .models.course import Course
 from .models.semester import Semester
 from .utils.auth import RequestSession, USTCSession
 from .utils.catalog import get_exams, get_semesters
-from .utils.jw import get_courses, update_lectures
+from .utils.jw import get_courses, get_jw_semesters, update_lectures
 from .utils.tools import BUILD_DIR, raw_date_to_unix_timestamp, save_json, tz
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,49 @@ def _has_existing_curriculum_data(curriculum_path: Path) -> bool:
             return True
 
     return False
+
+
+def _load_existing_semesters(curriculum_path: Path) -> list[Semester]:
+    semesters_path = curriculum_path / "semesters.json"
+    if not semesters_path.exists():
+        return []
+
+    try:
+        payload = json.loads(semesters_path.read_text())
+        return [Semester.model_validate(item) for item in payload]
+    except Exception as e:
+        logger.warning("Failed to load cached semester metadata: %s", e)
+        return []
+
+
+def _semester_sort_key(semester: Semester) -> tuple[int, str]:
+    if semester.id.isdigit():
+        return int(semester.id), semester.id
+    return -1, semester.id
+
+
+def _merge_semesters(*semester_groups: list[Semester]) -> list[Semester]:
+    merged: dict[str, Semester] = {}
+
+    for semesters in semester_groups:
+        for semester in semesters:
+            if not semester.id:
+                continue
+
+            current = merged.get(semester.id)
+            if current is None:
+                merged[semester.id] = semester
+                continue
+
+            merged[semester.id] = Semester(
+                id=semester.id,
+                courses=semester.courses or current.courses,
+                name=semester.name or current.name,
+                startDate=semester.startDate or current.startDate,
+                endDate=semester.endDate or current.endDate,
+            )
+
+    return sorted(merged.values(), key=_semester_sort_key)
 
 
 def _shift_year(value: date, years: int) -> date:
@@ -159,10 +203,20 @@ async def make_curriculum(
         course_api_path.mkdir(parents=True)
 
     async with USTCSession() as session:
-        semesters = await get_semesters(session=session)
+        existing_semesters = _load_existing_semesters(curriculum_path)
+        catalog_semesters = await get_semesters(session=session)
+        jw_semesters: list[Semester] = []
+
+        if mode == "all" or not _has_existing_curriculum_data(curriculum_path):
+            jw_semesters = await get_jw_semesters(session=session)
+
+        semesters = _merge_semesters(
+            existing_semesters,
+            jw_semesters,
+            catalog_semesters,
+        )
         save_json(semesters, curriculum_path / "semesters.json")
 
-        semesters = [semester for semester in semesters if int(semester.id) >= 421]
         semesters = _select_semesters(
             semesters,
             mode=mode,
@@ -171,7 +225,14 @@ async def make_curriculum(
         )
 
         logger.info(
-            "Refreshing %s semester(s) with mode=%s window_years=%s",
+            (
+                "Discovered %s semester(s): catalog=%s jw=%s cached=%s; "
+                "refreshing %s semester(s) with mode=%s window_years=%s"
+            ),
+            len(_merge_semesters(catalog_semesters, jw_semesters, existing_semesters)),
+            len(catalog_semesters),
+            len(jw_semesters),
+            len(existing_semesters),
             len(semesters),
             mode,
             window_years,

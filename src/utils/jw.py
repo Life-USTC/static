@@ -3,7 +3,7 @@ import logging
 
 from bs4 import BeautifulSoup
 
-from ..models import Course, Lecture
+from ..models import Course, Lecture, Semester
 from ..models.api.jw_for_std_lesson_search_semester import (
     JwForStdLessonSearchSemesterResponse,
 )
@@ -117,6 +117,21 @@ async def _get_jw_semester_options(
         if semester_id and semester_name:
             result.append((semester_id, semester_name))
     return result
+
+
+async def get_jw_semesters(session: RequestSession) -> list[Semester]:
+    user_id = await _get_jw_user_id(session=session)
+    options = await _get_jw_semester_options(session=session, user_id=user_id)
+    return [
+        Semester(
+            id=semester_id,
+            courses=[],
+            name=semester_name,
+            startDate=0,
+            endDate=0,
+        )
+        for semester_id, semester_name in options
+    ]
 
 
 async def fetch_jw_courses_json(session: RequestSession, semester_id: str) -> dict:
