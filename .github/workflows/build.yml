@@ -8,6 +8,15 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      curriculum_semester_mode:
+        description: "Semester refresh mode"
+        required: true
+        default: "window"
+        type: choice
+        options:
+          - window
+          - all
   repository_dispatch:
     types: [retry_job]
 
@@ -44,7 +53,9 @@ jobs:
       - name: Select curriculum refresh mode
         id: curriculum-refresh
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "0 0 * * *" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.curriculum_semester_mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "0 0 * * *" ]; then
             echo "mode=all" >> "$GITHUB_OUTPUT"
           else
             echo "mode=window" >> "$GITHUB_OUTPUT"
@@ -78,7 +89,6 @@ jobs:
         id: deployment
         uses: actions/upload-pages-artifact@v4
         with:
-          include-hidden-files: true
           path: build/
 
   deploy:
