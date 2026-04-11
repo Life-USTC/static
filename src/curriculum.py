@@ -19,21 +19,6 @@ logger = logging.getLogger(__name__)
 SemesterPullMode = Literal["all", "window"]
 
 
-def _has_existing_curriculum_data(curriculum_path: Path) -> bool:
-    if not curriculum_path.exists():
-        return False
-
-    for semester_path in curriculum_path.iterdir():
-        if (
-            semester_path.is_dir()
-            and semester_path.name.isdigit()
-            and (semester_path / "courses.json").exists()
-        ):
-            return True
-
-    return False
-
-
 def _load_existing_semesters(curriculum_path: Path) -> list[Semester]:
     semesters_path = curriculum_path / "semesters.json"
     if not semesters_path.exists():
@@ -110,13 +95,7 @@ def _select_semesters(
     if mode == "all":
         return semesters
 
-    if _has_existing_curriculum_data(curriculum_path):
-        return _filter_semesters_for_window(semesters, window_years=window_years)
-
-    logger.info(
-        "No cached curriculum data found; falling back to a full semester refresh"
-    )
-    return semesters
+    return _filter_semesters_for_window(semesters, window_years=window_years)
 
 
 async def fetch_semester(
@@ -207,7 +186,7 @@ async def make_curriculum(
         catalog_semesters = await get_semesters(session=session)
         jw_semesters: list[Semester] = []
 
-        if mode == "all" or not _has_existing_curriculum_data(curriculum_path):
+        if mode == "all":
             jw_semesters = await get_jw_semesters(session=session)
 
         semesters = _merge_semesters(
