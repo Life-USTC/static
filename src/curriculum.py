@@ -126,7 +126,9 @@ async def fetch_semester(
     curriculum_path: Path,
     semester_id: str,
     course_api_path: Path,
-):
+    *,
+    refresh_lectures: bool = True,
+) -> bool:
     semester_path = curriculum_path / semester_id
     if not semester_path.exists():
         semester_path.mkdir()
@@ -135,7 +137,7 @@ async def fetch_semester(
         incomplete_courses = await get_courses(session=session, semester_id=semester_id)
     except Exception as e:
         logger.exception("Failed to get courses for semester %s: %s", semester_id, e)
-        return
+        return False
 
     save_json(incomplete_courses, semester_path / "courses.json")
 
@@ -159,6 +161,10 @@ async def fetch_semester(
     incomplete_courses_chunks = [
         incomplete_courses[i : i + 100] for i in range(0, len(incomplete_courses), 100)
     ]
+    lecture_refresh_failed = False
+
+    if not refresh_lectures:
+        logger.info("Skipping lecture refresh for semester %s", semester_id)
 
     async def fetch_course_info(
         session: RequestSession,
@@ -168,18 +174,25 @@ async def fetch_semester(
         progress_bar,
         course_api_path: Path,
     ):
+        nonlocal lecture_refresh_failed
         async with sem:
-            try:
-                courses = await update_lectures(session, incomplete_courses)
-            except Exception as e:
-                logger.warning(
-                    (
-                        "Failed to update lectures for semester %s; "
-                        "keeping cached lectures where available: %s"
-                    ),
-                    semester_id,
-                    e,
-                )
+            if refresh_lectures:
+                try:
+                    courses = await update_lectures(session, incomplete_courses)
+                except Exception as e:
+                    lecture_refresh_failed = True
+                    logger.warning(
+                        (
+                            "Failed to update lectures for semester %s; "
+                            "keeping cached lectures where available: %s"
+                        ),
+                        semester_id,
+                        e,
+                    )
+                    courses = _keep_cached_lectures(
+                        incomplete_courses, semester_path, course_api_path
+                    )
+            else:
                 courses = _keep_cached_lectures(
                     incomplete_courses, semester_path, course_api_path
                 )
@@ -204,6 +217,8 @@ async def fetch_semester(
 
     with progress_bar:
         await asyncio.gather(*tasks)
+
+    return lecture_refresh_failed
 
 
 async def make_curriculum(
@@ -246,15 +261,19 @@ async def make_curriculum(
             window_years,
         )
 
+        lecture_refresh_enabled = True
         for semester in tqdm(
             semesters,
             position=1,
             leave=True,
             desc="Processing semesters",
         ):
-            await fetch_semester(
+            lecture_refresh_failed = await fetch_semester(
                 session,
                 curriculum_path,
                 str(semester.id),
                 course_api_path,
+                refresh_lectures=lecture_refresh_enabled,
             )
+            if lecture_refresh_failed:
+                lecture_refresh_enabled = False
