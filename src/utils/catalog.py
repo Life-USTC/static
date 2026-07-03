@@ -1,6 +1,6 @@
 import asyncio
 
-from ..models import Course, Exam, Semester
+from ..models import Course, Exam, Semester, TeacherAssignment
 from ..models.api.catalog_api_teach_exam_list import TeachExamListResponse
 from ..models.api.catalog_api_teach_lesson_list_for_teach import (
     TeachLessonListResponse,
@@ -56,9 +56,10 @@ def parse_courses(payload: list[dict]) -> list[Course]:
     for item in parsed.root or []:
         if not item:
             continue
-        teacher_names = [
-            ta.cn for ta in (item.teacherAssignmentList or []) if ta and ta.cn
-        ]
+        teacher_assignments = _parse_catalog_teacher_assignments(
+            item.teacherAssignmentList or []
+        )
+        teacher_names = [ta.name for ta in teacher_assignments]
         teachers = join_nonempty(teacher_names)
         course = item.course
         result.append(
@@ -68,6 +69,7 @@ def parse_courses(payload: list[dict]) -> list[Course]:
                 courseCode=course.code if course and course.code else "",
                 lessonCode=item.code or "",
                 teacherName=teachers,
+                teacherAssignments=teacher_assignments,
                 lectures=[],
                 exams=[],
                 dateTimePlacePersonText=item.dateTimePlacePersonText.cn
@@ -92,6 +94,21 @@ def parse_courses(payload: list[dict]) -> list[Course]:
                 description="",
                 credit=item.credits or 0,
                 additionalInfo={},
+            )
+        )
+    return result
+
+
+def _parse_catalog_teacher_assignments(assignments) -> list[TeacherAssignment]:
+    result: list[TeacherAssignment] = []
+    for assignment in assignments:
+        if not assignment or not assignment.cn:
+            continue
+        result.append(
+            TeacherAssignment(
+                name=assignment.cn,
+                nameEn=assignment.en,
+                departmentCode=assignment.departmentCode,
             )
         )
     return result

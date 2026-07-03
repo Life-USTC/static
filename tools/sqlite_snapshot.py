@@ -8,7 +8,7 @@ from pathlib import Path
 
 from src.models import Course, Semester
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SNAPSHOT_FILENAME = "life-ustc-static.sqlite"
 
 
@@ -89,6 +89,41 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX courses_semester_idx ON courses(semester_id);
         CREATE INDEX courses_code_idx ON courses(course_code);
+
+        CREATE TABLE course_teacher_assignments (
+            course_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            name_en TEXT,
+            code TEXT,
+            teacher_id INTEGER,
+            person_id INTEGER,
+            department TEXT,
+            department_code TEXT,
+            role TEXT,
+            index_no INTEGER,
+            age INTEGER,
+            title TEXT,
+            period REAL,
+            teacher_lesson_type TEXT,
+            teacher_lesson_type_code TEXT,
+            teacher_lesson_type_role TEXT,
+            week_indices TEXT NOT NULL,
+            week_indices_msg TEXT,
+            PRIMARY KEY (course_id, position),
+            FOREIGN KEY (course_id) REFERENCES courses(id)
+        );
+
+        CREATE INDEX course_teacher_assignments_course_idx
+            ON course_teacher_assignments(course_id);
+        CREATE INDEX course_teacher_assignments_name_department_idx
+            ON course_teacher_assignments(name, department, department_code);
+        CREATE INDEX course_teacher_assignments_code_idx
+            ON course_teacher_assignments(code);
+        CREATE INDEX course_teacher_assignments_teacher_id_idx
+            ON course_teacher_assignments(teacher_id);
+        CREATE INDEX course_teacher_assignments_person_id_idx
+            ON course_teacher_assignments(person_id);
 
         CREATE TABLE course_lectures (
             course_id INTEGER NOT NULL,
@@ -183,6 +218,9 @@ def export_sqlite_snapshot(build_dir: Path, output_path: Path | None = None) -> 
 
     semesters = _load_semesters(build_dir)
     courses = list(_iter_semester_courses(build_dir))
+    teacher_assignment_count = sum(
+        len(course.teacherAssignments) for _, course in courses
+    )
     bus_payload = _load_bus_payload(build_dir)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -202,6 +240,7 @@ def export_sqlite_snapshot(build_dir: Path, output_path: Path | None = None) -> 
             "generated_at": generated_at,
             "semester_count": str(len(semesters)),
             "course_count": str(len(courses)),
+            "course_teacher_assignment_count": str(teacher_assignment_count),
         }
         if repo_sha is not None:
             metadata_items["github_sha"] = repo_sha
@@ -258,6 +297,57 @@ def export_sqlite_snapshot(build_dir: Path, output_path: Path | None = None) -> 
                     course.credit,
                 )
                 for semester_id, course in courses
+            ),
+        )
+
+        conn.executemany(
+            """
+            INSERT INTO course_teacher_assignments(
+                course_id,
+                position,
+                name,
+                name_en,
+                code,
+                teacher_id,
+                person_id,
+                department,
+                department_code,
+                role,
+                index_no,
+                age,
+                title,
+                period,
+                teacher_lesson_type,
+                teacher_lesson_type_code,
+                teacher_lesson_type_role,
+                week_indices,
+                week_indices_msg
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    course.id,
+                    position,
+                    assignment.name,
+                    assignment.nameEn,
+                    assignment.code,
+                    assignment.teacherId,
+                    assignment.personId,
+                    assignment.department,
+                    assignment.departmentCode,
+                    assignment.role,
+                    assignment.indexNo,
+                    assignment.age,
+                    assignment.title,
+                    assignment.period,
+                    assignment.teacherLessonType,
+                    assignment.teacherLessonTypeCode,
+                    assignment.teacherLessonTypeRole,
+                    json.dumps(assignment.weekIndices, ensure_ascii=False),
+                    assignment.weekIndicesMsg,
+                )
+                for _, course in courses
+                for position, assignment in enumerate(course.teacherAssignments)
             ),
         )
 

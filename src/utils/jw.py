@@ -3,7 +3,7 @@ import logging
 
 from bs4 import BeautifulSoup
 
-from ..models import Course, Lecture, Semester
+from ..models import Course, Lecture, Semester, TeacherAssignment
 from ..models.api.jw_for_std_lesson_search_semester import (
     JwForStdLessonSearchSemesterResponse,
 )
@@ -170,11 +170,10 @@ def parse_jw_courses(payload: dict) -> list[Course]:
     for lesson_item in parsed.data or []:
         if not lesson_item:
             continue
-        teacher_names = [
-            ta.person.nameZh
-            for ta in (lesson_item.teacherAssignmentList or [])
-            if ta and ta.person and ta.person.nameZh
-        ]
+        teacher_assignments = _parse_jw_teacher_assignments(
+            lesson_item.teacherAssignmentList or []
+        )
+        teacher_names = [ta.name for ta in teacher_assignments]
         teachers = join_nonempty(teacher_names)
         course_type_name = (
             lesson_item.courseType.nameZh if lesson_item.courseType else ""
@@ -187,6 +186,7 @@ def parse_jw_courses(payload: dict) -> list[Course]:
                 courseCode=course.code if course and course.code else "",
                 lessonCode=lesson_item.code or "",
                 teacherName=teachers,
+                teacherAssignments=teacher_assignments,
                 lectures=[],
                 exams=[],
                 dateTimePlacePersonText=lesson_item.scheduleText.dateTimePlacePersonText.textZh
@@ -214,6 +214,56 @@ def parse_jw_courses(payload: dict) -> list[Course]:
                 description=lesson_item.introduction or "",
                 credit=lesson_item.credits or 0,
                 additionalInfo={},
+            )
+        )
+    return result
+
+
+def _parse_jw_teacher_assignments(assignments) -> list[TeacherAssignment]:
+    result: list[TeacherAssignment] = []
+    for assignment in assignments:
+        if not assignment:
+            continue
+        teacher = assignment.teacher
+        person = assignment.person or (teacher.person if teacher else None)
+        name = (
+            person.nameZh
+            if person and person.nameZh
+            else teacher.person.nameZh
+            if teacher and teacher.person and teacher.person.nameZh
+            else ""
+        )
+        if not name:
+            continue
+
+        result.append(
+            TeacherAssignment(
+                name=name,
+                nameEn=person.nameEn if person and person.nameEn else None,
+                code=teacher.code
+                if teacher and teacher.code
+                else getattr(person, "code", None)
+                if person and getattr(person, "code", None)
+                else None,
+                teacherId=teacher.id if teacher else None,
+                personId=person.id if person else None,
+                department=teacher.department if teacher else None,
+                role=assignment.role,
+                indexNo=assignment.indexNo,
+                age=assignment.age,
+                title=assignment.title or (teacher.title if teacher else None),
+                period=assignment.period,
+                teacherLessonType=assignment.teacherLessonType.nameZh
+                if assignment.teacherLessonType
+                else None,
+                teacherLessonTypeCode=assignment.teacherLessonType.code
+                if assignment.teacherLessonType
+                else None,
+                teacherLessonTypeRole=assignment.teacherLessonType.role
+                if assignment.teacherLessonType
+                else None,
+                weekIndices=assignment.weekIndices or [],
+                weekIndicesMsg=assignment.weekIndicesMsg,
             )
         )
     return result
