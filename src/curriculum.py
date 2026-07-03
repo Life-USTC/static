@@ -11,7 +11,7 @@ from .models.course import Course
 from .models.semester import Semester
 from .utils.auth import RequestSession, USTCSession
 from .utils.catalog import get_courses, get_exams, get_semesters
-from .utils.jw import get_jw_semesters, update_lectures
+from .utils.jw import update_lectures
 from .utils.tools import BUILD_DIR, raw_date_to_unix_timestamp, save_json, tz
 
 logger = logging.getLogger(__name__)
@@ -220,19 +220,8 @@ async def make_curriculum(
     async with USTCSession() as session:
         existing_semesters = _load_existing_semesters(curriculum_path)
         catalog_semesters = await get_semesters(session=session)
-        jw_semesters: list[Semester] = []
-
-        if mode == "all":
-            try:
-                jw_semesters = await get_jw_semesters(session=session)
-            except Exception as e:
-                logger.exception(
-                    "Failed to get JW semesters; using catalog and cache: %s", e
-                )
-
         semesters = _merge_semesters(
             existing_semesters,
-            jw_semesters,
             catalog_semesters,
         )
         save_json(semesters, curriculum_path / "semesters.json")
@@ -246,12 +235,11 @@ async def make_curriculum(
 
         logger.info(
             (
-                "Discovered %s semester(s): catalog=%s jw=%s cached=%s; "
+                "Discovered %s semester(s): catalog=%s cached=%s; "
                 "refreshing %s semester(s) with mode=%s window_years=%s"
             ),
-            len(_merge_semesters(catalog_semesters, jw_semesters, existing_semesters)),
+            len(_merge_semesters(catalog_semesters, existing_semesters)),
             len(catalog_semesters),
-            len(jw_semesters),
             len(existing_semesters),
             len(semesters),
             mode,
