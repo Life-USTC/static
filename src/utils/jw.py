@@ -297,7 +297,12 @@ async def fetch_jw_schedule_table_json(
 ) -> dict:
     url = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
     course_id_list = [str(course.id) for course in course_list]
-    return await session.post_json(url=url, data={"lessonIds": course_id_list})
+    return await session.post_json(
+        url=url,
+        data={"lessonIds": course_id_list},
+        timeout=30_000,
+        max_retries=2,
+    )
 
 
 def parse_jw_schedule_table(
