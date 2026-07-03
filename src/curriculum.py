@@ -98,6 +98,29 @@ def _select_semesters(
     return _filter_semesters_for_window(semesters, window_years=window_years)
 
 
+def _load_cached_course(path: Path) -> Course | None:
+    if not path.exists():
+        return None
+
+    try:
+        return Course.model_validate(json.loads(path.read_text()))
+    except Exception as e:
+        logger.warning("Failed to load cached course %s: %s", path, e)
+        return None
+
+
+def _keep_cached_lectures(
+    courses: list[Course], semester_path: Path, course_api_path: Path
+) -> list[Course]:
+    for course in courses:
+        cached = _load_cached_course(semester_path / f"{course.id}.json")
+        if cached is None:
+            cached = _load_cached_course(course_api_path / f"{course.id}")
+        if cached is not None:
+            course.lectures = cached.lectures
+    return courses
+
+
 async def fetch_semester(
     session: RequestSession,
     curriculum_path: Path,
@@ -149,10 +172,17 @@ async def fetch_semester(
             try:
                 courses = await update_lectures(session, incomplete_courses)
             except Exception as e:
-                logger.exception(
-                    "Failed to update lectures for semester %s: %s", semester_id, e
+                logger.warning(
+                    (
+                        "Failed to update lectures for semester %s; "
+                        "keeping cached lectures where available: %s"
+                    ),
+                    semester_id,
+                    e,
                 )
-                courses = incomplete_courses
+                courses = _keep_cached_lectures(
+                    incomplete_courses, semester_path, course_api_path
+                )
 
             for course in courses:
                 save_json(course, semester_path / f"{course.id}.json")
