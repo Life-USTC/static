@@ -143,12 +143,13 @@ async def _store_jw_schedule_chunks(
                 ok=False,
                 error=str(e),
             )
-            logger.warning(
-                "Skipping non-JSON JW schedule table response for semester %s chunk %s",
+            logger.info(
+                "Skipping remaining JW schedule table chunks for semester %s after "
+                "non-JSON response at chunk %s",
                 semester_id,
                 chunk_index,
             )
-            continue
+            break
 
         response = JwWsScheduleTableDatumResponse.model_validate(payload)
         schedule_responses.append(response)
