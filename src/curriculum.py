@@ -8,9 +8,10 @@ from typing import Literal
 from tqdm import tqdm
 
 from .models.course import Course
+from .models.department import Department
 from .models.semester import Semester
 from .utils.auth import RequestSession, USTCSession
-from .utils.catalog import get_courses, get_exams, get_semesters
+from .utils.catalog import get_courses, get_departments, get_exams, get_semesters
 from .utils.jw import update_lectures
 from .utils.tools import BUILD_DIR, raw_date_to_unix_timestamp, save_json, tz
 
@@ -29,6 +30,19 @@ def _load_existing_semesters(curriculum_path: Path) -> list[Semester]:
         return [Semester.model_validate(item) for item in payload]
     except Exception as e:
         logger.warning("Failed to load cached semester metadata: %s", e)
+        return []
+
+
+def _load_existing_departments(curriculum_path: Path) -> list[Department]:
+    departments_path = curriculum_path / "departments.json"
+    if not departments_path.exists():
+        return []
+
+    try:
+        payload = json.loads(departments_path.read_text())
+        return [Department.model_validate(item) for item in payload]
+    except Exception as e:
+        logger.warning("Failed to load cached department metadata: %s", e)
         return []
 
 
@@ -235,6 +249,12 @@ async def make_curriculum(
     async with USTCSession() as session:
         existing_semesters = _load_existing_semesters(curriculum_path)
         catalog_semesters = await get_semesters(session=session)
+        try:
+            departments = await get_departments(session=session)
+        except Exception as e:
+            logger.warning("Failed to get catalog departments: %s", e)
+            departments = _load_existing_departments(curriculum_path)
+        save_json(departments, curriculum_path / "departments.json")
         semesters = _merge_semesters(
             existing_semesters,
             catalog_semesters,

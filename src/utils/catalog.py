@@ -1,6 +1,6 @@
 import asyncio
 
-from ..models import Course, Exam, Semester, TeacherAssignment
+from ..models import Course, Department, Exam, Semester, TeacherAssignment
 from ..models.api.catalog_api_teach_exam_list import TeachExamListResponse
 from ..models.api.catalog_api_teach_lesson_list_for_teach import (
     TeachLessonListResponse,
@@ -41,6 +41,59 @@ def parse_semesters(payload: list[dict]) -> list[Semester]:
 async def get_semesters(session: RequestSession) -> list[Semester]:
     payload = await fetch_semesters_json(session=session)
     return parse_semesters(payload)
+
+
+async def fetch_departments_json(session: RequestSession) -> list[dict]:
+    url = "https://catalog.ustc.edu.cn/api/teach/department/college-tree"
+    return await session.get_json(url=url)
+
+
+def _department_text(item: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _department_bool(item: dict, *keys: str) -> bool | None:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
+
+
+def parse_departments(payload: list[dict]) -> list[Department]:
+    departments: dict[str, Department] = {}
+
+    def visit(items: list[dict] | None, parent_code: str | None = None) -> None:
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+
+            code = _department_text(item, "code")
+            name = _department_text(item, "nameZh", "name")
+            if code and name:
+                departments[code] = Department(
+                    code=code,
+                    name=name,
+                    nameEn=_department_text(item, "nameEn"),
+                    parentCode=parent_code,
+                    isCollege=_department_bool(item, "college", "isCollege"),
+                )
+
+            children = item.get("children")
+            if isinstance(children, list):
+                visit(children, code or parent_code)
+
+    visit(payload)
+    return sorted(departments.values(), key=lambda department: department.code)
+
+
+async def get_departments(session: RequestSession) -> list[Department]:
+    payload = await fetch_departments_json(session=session)
+    return parse_departments(payload)
 
 
 async def fetch_courses_json(session: RequestSession, semester_id: str) -> list[dict]:

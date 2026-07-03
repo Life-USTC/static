@@ -6,9 +6,9 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from src.models import Course, Semester
+from src.models import Course, Department, Semester
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SNAPSHOT_FILENAME = "life-ustc-static.sqlite"
 
 
@@ -20,6 +20,15 @@ def _load_semesters(build_dir: Path) -> list[Semester]:
     semester_path = build_dir / "curriculum" / "semesters.json"
     semesters = _read_json(semester_path)
     return [Semester.model_validate(item) for item in semesters]
+
+
+def _load_departments(build_dir: Path) -> list[Department]:
+    departments_path = build_dir / "curriculum" / "departments.json"
+    if not departments_path.exists():
+        return []
+
+    departments = _read_json(departments_path)
+    return [Department.model_validate(item) for item in departments]
 
 
 def _iter_semester_courses(build_dir: Path):
@@ -67,6 +76,18 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             start_date INTEGER NOT NULL,
             end_date INTEGER NOT NULL
         );
+
+        CREATE TABLE departments (
+            code TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            name_en TEXT,
+            parent_code TEXT,
+            is_college INTEGER,
+            FOREIGN KEY (parent_code) REFERENCES departments(code)
+        );
+
+        CREATE INDEX departments_name_idx ON departments(name);
+        CREATE INDEX departments_parent_idx ON departments(parent_code);
 
         CREATE TABLE courses (
             id INTEGER PRIMARY KEY,
@@ -217,6 +238,7 @@ def export_sqlite_snapshot(build_dir: Path, output_path: Path | None = None) -> 
         output_path = build_dir / SNAPSHOT_FILENAME
 
     semesters = _load_semesters(build_dir)
+    departments = _load_departments(build_dir)
     courses = list(_iter_semester_courses(build_dir))
     teacher_assignment_count = sum(
         len(course.teacherAssignments) for _, course in courses
@@ -239,6 +261,7 @@ def export_sqlite_snapshot(build_dir: Path, output_path: Path | None = None) -> 
             "schema_version": str(SCHEMA_VERSION),
             "generated_at": generated_at,
             "semester_count": str(len(semesters)),
+            "department_count": str(len(departments)),
             "course_count": str(len(courses)),
             "course_teacher_assignment_count": str(teacher_assignment_count),
         }
@@ -255,6 +278,23 @@ def export_sqlite_snapshot(build_dir: Path, output_path: Path | None = None) -> 
             (
                 (semester.id, semester.name, semester.startDate, semester.endDate)
                 for semester in semesters
+            ),
+        )
+
+        conn.executemany(
+            """
+            INSERT INTO departments(code, name, name_en, parent_code, is_college)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    department.code,
+                    department.name,
+                    department.nameEn,
+                    department.parentCode,
+                    None if department.isCollege is None else int(department.isCollege),
+                )
+                for department in departments
             ),
         )
 
