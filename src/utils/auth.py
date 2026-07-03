@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from patchright.async_api import (
     Browser,
     BrowserContext,
+    Error,
     Page,
     Playwright,
     async_playwright,
@@ -147,12 +148,68 @@ class RequestSession:
         timeout_ms: int = 10 * 60 * 1000,
         fail_on_status_code: bool = True,
         max_retries: int = 100,
+        transient_retries: int = 3,
     ):
         self.page = page
         self.timeout_ms = timeout_ms
         self.fail_on_status_code = fail_on_status_code
         self.max_retries = max_retries
+        self.transient_retries = transient_retries
         self.logger = logging.getLogger(__name__)
+
+    def _is_transient_request_error(self, e: Error) -> bool:
+        message = str(e).lower()
+        return any(
+            marker in message
+            for marker in (
+                " 429 ",
+                " 500 ",
+                " 502 ",
+                " 503 ",
+                " 504 ",
+                "gateway time-out",
+                "timeout",
+                "timed out",
+                "econnreset",
+                "socket hang up",
+            )
+        )
+
+    def _request_retry_wait_ms(self, attempt: int) -> int:
+        return min(2_000 * attempt, 10_000)
+
+    async def _request_with_transient_retries(
+        self,
+        *,
+        method: str,
+        url: str,
+        request: Callable[[], Awaitable[Any]],
+        retries: int,
+    ):
+        for attempt in range(1, retries + 2):
+            self.logger.info(f"{method} {url}")
+            try:
+                r = await request()
+            except Error as e:
+                if attempt > retries or not self._is_transient_request_error(e):
+                    raise
+                wait_ms = self._request_retry_wait_ms(attempt)
+                self.logger.warning(
+                    "%s %s transient failure on attempt %s/%s, retry in %sms: %s",
+                    method,
+                    url,
+                    attempt,
+                    retries + 1,
+                    wait_ms,
+                    e,
+                )
+                await self.page.wait_for_timeout(wait_ms)
+                continue
+
+            self.logger.info(f"{method} {url} done")
+            return r
+
+        raise RuntimeError(f"{method} {url} retry loop exhausted")
 
     async def get(self, url: str, **kwargs: Any):
         params: dict[str, Any] = {
@@ -166,11 +223,12 @@ class RequestSession:
         if "headers" in kwargs and kwargs["headers"] is not None:
             params["headers"] = kwargs["headers"]
 
-        self.logger.info(f"GET {url}")
-        r = await self.page.request.get(**params)
-        self.logger.info(f"GET {url} done")
-
-        return r
+        return await self._request_with_transient_retries(
+            method="GET",
+            url=url,
+            request=lambda: self.page.request.get(**params),
+            retries=kwargs.get("transient_retries", self.transient_retries),
+        )
 
     async def post(self, url: str, data: Any = None, **kwargs: Any):
         params: dict[str, Any] = {
@@ -185,11 +243,12 @@ class RequestSession:
         if "headers" in kwargs and kwargs["headers"] is not None:
             params["headers"] = kwargs["headers"]
 
-        self.logger.info(f"POST {url}")
-        r = await self.page.request.post(**params)
-        self.logger.info(f"POST {url} done")
-
-        return r
+        return await self._request_with_transient_retries(
+            method="POST",
+            url=url,
+            request=lambda: self.page.request.post(**params),
+            retries=kwargs.get("transient_retries", self.transient_retries),
+        )
 
     async def get_json(self, url: str, **kwargs: Any):
         r = await self.get(url, **kwargs)

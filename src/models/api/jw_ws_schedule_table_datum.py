@@ -85,7 +85,13 @@ class AdminClass(BaseModel):
     code: str | None
     nameZh: str | None
     nameEn: str | None
-    name: str | None
+    grade: str | None
+    stdCount: int | None
+    planCount: int | None
+    enabled: bool | None
+    abbrZh: str | None
+    abbrEn: str | None
+    name: str | None = None
 
 
 class ScheduleJsonParam(BaseModel):
