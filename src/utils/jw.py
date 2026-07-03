@@ -14,6 +14,10 @@ from .auth import RequestSession
 from .tools import cache_dir_from_url, compose_start_end, join_nonempty, save_json
 
 _jw_user_id_cache: dict[int, str] = {}
+JW_SSO_URL = (
+    "https://passport.ustc.edu.cn/login?"
+    "service=https%3A%2F%2Fjw.ustc.edu.cn%2Fucas-sso%2Flogin"
+)
 
 indexStartTimes: dict[int, int] = {
     1: 7 * 60 + 50,
@@ -84,14 +88,28 @@ async def _get_jw_user_id(session: RequestSession) -> str:
         return list(_jw_user_id_cache.values())[0]
 
     url = "https://jw.ustc.edu.cn/for-std/course-select"
-    r = await session.get(url=url)
-    final_url = getattr(r, "url", "")
-    user_id = str(final_url).split("/")[-1]
-    if not user_id.isnumeric():
-        raise ValueError(f"Failed to get jw user id from url: {final_url}")
+    final_url = ""
+    for attempt in range(1, 4):
+        r = await session.get(url=url)
+        final_url = getattr(r, "url", "")
+        user_id = str(final_url).split("/")[-1]
+        if user_id.isnumeric():
+            _jw_user_id_cache[id(session)] = user_id
+            return user_id
 
-    _jw_user_id_cache[id(session)] = user_id
-    return user_id
+        session.logger.warning(
+            "jw course-select returned non-user url on attempt %s: %s",
+            attempt,
+            final_url,
+        )
+        await session.page.goto(
+            JW_SSO_URL,
+            wait_until="networkidle",
+            timeout=session.timeout_ms,
+        )
+        await session.page.wait_for_timeout(min(2_000 * attempt, 5_000))
+
+    raise ValueError(f"Failed to get jw user id from url: {final_url}")
 
 
 async def _get_jw_semester_options(
