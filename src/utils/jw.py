@@ -11,7 +11,7 @@ from ..models.api.jw_ws_schedule_table_datum import (
     JwWsScheduleTableDatumResponse,
 )
 from .auth import RequestSession
-from .tools import cache_dir_from_url, compose_start_end, join_nonempty, save_json
+from .tools import compose_start_end, join_nonempty
 
 _jw_user_id_cache: dict[int, str] = {}
 JW_SSO_URL = (
@@ -305,37 +305,11 @@ async def fetch_jw_schedule_table_json(
     )
 
 
-def parse_jw_schedule_table(
-    course_list: list[Course], payload: dict, *, cache_url: str | None = None
-) -> list[Course]:
+def parse_jw_schedule_table(course_list: list[Course], payload: dict) -> list[Course]:
     logger = logging.getLogger(__name__)
     parsed = JwWsScheduleTableDatumResponse.model_validate(payload)
     if not parsed.result:
         return course_list
-
-    if cache_url:
-        for course in course_list:
-            save_course_json: dict = {"result": {}}
-            save_course_json["result"]["lessonList"] = [
-                item.model_dump()
-                for item in (parsed.result.lessonList or [])
-                if item.id == course.id
-            ]
-            save_course_json["result"]["scheduleList"] = [
-                item.model_dump()
-                for item in (parsed.result.scheduleList or [])
-                if item.lessonId == course.id
-            ]
-            save_course_json["result"]["scheduleGroupList"] = [
-                item.model_dump()
-                for item in (parsed.result.scheduleGroupList or [])
-                if item.lessonId == course.id
-            ]
-
-            save_json(
-                save_course_json,
-                cache_dir_from_url(cache_url) / f"{course.id}.json",
-            )
 
     for schedule_item in parsed.result.scheduleList or []:
         if not schedule_item:
@@ -396,8 +370,7 @@ def parse_jw_schedule_table(
 async def update_lectures(
     session: RequestSession, course_list: list[Course]
 ) -> list[Course]:
-    url = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
     payload = await fetch_jw_schedule_table_json(
         session=session, course_list=course_list
     )
-    return parse_jw_schedule_table(course_list, payload, cache_url=url)
+    return parse_jw_schedule_table(course_list, payload)
