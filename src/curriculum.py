@@ -10,8 +10,8 @@ from tqdm import tqdm
 from .models.course import Course
 from .models.semester import Semester
 from .utils.auth import RequestSession, USTCSession
-from .utils.catalog import get_exams, get_semesters
-from .utils.jw import get_courses, get_jw_semesters, update_lectures
+from .utils.catalog import get_courses, get_exams, get_semesters
+from .utils.jw import get_jw_semesters, update_lectures
 from .utils.tools import BUILD_DIR, raw_date_to_unix_timestamp, save_json, tz
 
 logger = logging.getLogger(__name__)
@@ -146,7 +146,13 @@ async def fetch_semester(
         course_api_path: Path,
     ):
         async with sem:
-            courses = await update_lectures(session, incomplete_courses)
+            try:
+                courses = await update_lectures(session, incomplete_courses)
+            except Exception as e:
+                logger.exception(
+                    "Failed to update lectures for semester %s: %s", semester_id, e
+                )
+                courses = incomplete_courses
 
             for course in courses:
                 save_json(course, semester_path / f"{course.id}.json")
@@ -187,7 +193,12 @@ async def make_curriculum(
         jw_semesters: list[Semester] = []
 
         if mode == "all":
-            jw_semesters = await get_jw_semesters(session=session)
+            try:
+                jw_semesters = await get_jw_semesters(session=session)
+            except Exception as e:
+                logger.exception(
+                    "Failed to get JW semesters; using catalog and cache: %s", e
+                )
 
         semesters = _merge_semesters(
             existing_semesters,
