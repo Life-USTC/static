@@ -4,9 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from pydantic import BaseModel
+from .base import UpstreamBaseModel as BaseModel
 
 
 class Title(BaseModel):
@@ -53,7 +51,7 @@ class TeacherAssignmentListItem(BaseModel):
     period: float | None
     teacherLessonType: TeacherLessonType | None
     contactInfo: ContactInfo | None
-    weekIndices: list[Any] | None
+    weekIndices: list[int] | None
     weekIndicesMsg: str | None
 
 
@@ -82,6 +80,29 @@ class RequiredPeriodInfo(BaseModel):
     timesPerWeek: int | None
 
 
+class AdminClass(BaseModel):
+    id: int | None
+    code: str | None
+    nameZh: str | None
+    nameEn: str | None
+    name: str | None
+
+
+class ScheduleJsonParam(BaseModel):
+    lessonId: int | None
+    scheduleGroupId: int | None
+    scheduleId: int | None
+    teacherId: int | None
+    personId: int | None
+    date: str | None
+    weekday: int | None
+    startTime: int | None
+    endTime: int | None
+    weekIndex: int | None
+    startUnit: int | None
+    endUnit: int | None
+
+
 class LessonListItem(BaseModel):
     id: int | None
     code: str | None
@@ -100,11 +121,11 @@ class LessonListItem(BaseModel):
     suggestScheduleWeekInfo: str | None
     campusId: int | None
     roomTypeId: int | None
-    adminclassIds: list[Any] | None
+    adminclassIds: list[int] | None
     remark: str | None
     scheduleRemark: str | None
-    adminclasses: list[Any] | None
-    scheduleJsonParams: list[Any] | None
+    adminclasses: list[AdminClass] | None
+    scheduleJsonParams: list[ScheduleJsonParam] | None
     selectedStdCount: int | None
 
 

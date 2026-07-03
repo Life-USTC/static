@@ -8,8 +8,17 @@ GitHub Actions are used to keep the GitHub Pages deployment up-to-date.
 
 Each successful build also publishes a SQLite snapshot at
 `https://static.life-ustc.tiankaima.dev/life-ustc-static.sqlite`. The snapshot
-contains structured parsed curriculum and bus data for downstream import
-tooling.
+stores typed upstream curriculum responses in normalized SQLite tables.
+
+The build also publishes:
+
+- `https://static.life-ustc.tiankaima.dev/life-ustc-static-guesses.sqlite` for
+  inferred relationships that are not directly keyed by upstream data.
+- `https://static.life-ustc.tiankaima.dev/schemas/upstream/*.schema.json` for
+  the JSON Schema contract of each upstream response stored in SQLite.
+
+The previous generated curriculum JSON endpoints and upstream response cache
+files are no longer built or published.
 
 ## License & Warranty
 

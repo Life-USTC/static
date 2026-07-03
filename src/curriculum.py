@@ -1,299 +1,246 @@
-import asyncio
-import json
 import logging
-from datetime import date, datetime
-from pathlib import Path
-from typing import Literal
+from json import JSONDecodeError
 
 from tqdm import tqdm
 
+from .guesses import SQLiteGuessStore
+from .models.api.catalog_api_teach_department_college_tree import (
+    DepartmentCollegeTreeResponse,
+)
+from .models.api.catalog_api_teach_exam_list import TeachExamListResponse
+from .models.api.catalog_api_teach_lesson_list_for_teach import (
+    TeachLessonListResponse,
+)
+from .models.api.catalog_api_teach_semester_list import TeachSemesterListResponse
+from .models.api.jw_ws_schedule_table_datum import JwWsScheduleTableDatumResponse
 from .models.course import Course
-from .models.department import Department
 from .models.semester import Semester
+from .sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
+from .upstream_contracts import UPSTREAM_RESPONSE_MODELS
 from .utils.auth import RequestSession, USTCSession
-from .utils.catalog import get_courses, get_departments, get_exams, get_semesters
-from .utils.jw import update_lectures
-from .utils.tools import BUILD_DIR, raw_date_to_unix_timestamp, save_json, tz
+from .utils.catalog import (
+    fetch_courses_json,
+    fetch_departments_json,
+    fetch_exams_json,
+    fetch_semesters_json,
+    parse_courses,
+    parse_semesters,
+)
+from .utils.jw import fetch_jw_schedule_table_json
+from .utils.tools import BUILD_DIR
 
 logger = logging.getLogger(__name__)
 
-SemesterPullMode = Literal["all", "window"]
+CATALOG_SEMESTER_URL = "https://catalog.ustc.edu.cn/api/teach/semester/list"
+CATALOG_DEPARTMENT_URL = "https://catalog.ustc.edu.cn/api/teach/department/college-tree"
+CATALOG_LESSON_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach"
+CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
+JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
 
 
-def _load_existing_semesters(curriculum_path: Path) -> list[Semester]:
-    semesters_path = curriculum_path / "semesters.json"
-    if not semesters_path.exists():
-        return []
-
-    try:
-        payload = json.loads(semesters_path.read_text())
-        return [Semester.model_validate(item) for item in payload]
-    except Exception as e:
-        logger.warning("Failed to load cached semester metadata: %s", e)
-        return []
+def _course_chunks(courses: list[Course], chunk_size: int = 100) -> list[list[Course]]:
+    return [courses[i : i + chunk_size] for i in range(0, len(courses), chunk_size)]
 
 
-def _load_existing_departments(curriculum_path: Path) -> list[Department]:
-    departments_path = curriculum_path / "departments.json"
-    if not departments_path.exists():
-        return []
-
-    try:
-        payload = json.loads(departments_path.read_text())
-        return [Department.model_validate(item) for item in payload]
-    except Exception as e:
-        logger.warning("Failed to load cached department metadata: %s", e)
-        return []
+def _register_upstream_tables(store: SQLiteModelStore) -> None:
+    for table_name, response_model in UPSTREAM_RESPONSE_MODELS.items():
+        store.register_response_model(
+            table_name=table_name,
+            response_model=response_model,
+        )
 
 
-def _semester_sort_key(semester: Semester) -> tuple[int, str]:
-    if semester.id.isdigit():
-        return int(semester.id), semester.id
-    return -1, semester.id
-
-
-def _merge_semesters(*semester_groups: list[Semester]) -> list[Semester]:
-    merged: dict[str, Semester] = {}
-
-    for semesters in semester_groups:
-        for semester in semesters:
-            if not semester.id:
-                continue
-
-            current = merged.get(semester.id)
-            if current is None:
-                merged[semester.id] = semester
-                continue
-
-            merged[semester.id] = Semester(
-                id=semester.id,
-                courses=semester.courses or current.courses,
-                name=semester.name or current.name,
-                startDate=semester.startDate or current.startDate,
-                endDate=semester.endDate or current.endDate,
-            )
-
-    return sorted(merged.values(), key=_semester_sort_key)
-
-
-def _shift_year(value: date, years: int) -> date:
-    try:
-        return value.replace(year=value.year + years)
-    except ValueError:
-        return value.replace(month=2, day=28, year=value.year + years)
-
-
-def _filter_semesters_for_window(
-    semesters: list[Semester], *, window_years: int
+async def _store_catalog_semesters(
+    session: RequestSession, store: SQLiteModelStore
 ) -> list[Semester]:
-    today = datetime.now(tz).date()
-    window_start = _shift_year(today, -window_years)
-    window_end = _shift_year(today, window_years)
-    window_start_ts = raw_date_to_unix_timestamp(window_start.isoformat())
-    window_end_ts = raw_date_to_unix_timestamp(window_end.isoformat())
-
-    return [
-        semester
-        for semester in semesters
-        if window_start_ts <= semester.startDate <= window_end_ts
-    ]
-
-
-def _select_semesters(
-    semesters: list[Semester],
-    *,
-    mode: SemesterPullMode,
-    window_years: int,
-    curriculum_path: Path,
-) -> list[Semester]:
-    if mode == "all":
-        return semesters
-
-    return _filter_semesters_for_window(semesters, window_years=window_years)
-
-
-def _load_cached_course(path: Path) -> Course | None:
-    if not path.exists():
-        return None
-
-    try:
-        return Course.model_validate(json.loads(path.read_text()))
-    except Exception as e:
-        logger.warning("Failed to load cached course %s: %s", path, e)
-        return None
-
-
-def _keep_cached_lectures(
-    courses: list[Course], semester_path: Path, course_api_path: Path
-) -> list[Course]:
-    for course in courses:
-        cached = _load_cached_course(semester_path / f"{course.id}.json")
-        if cached is None:
-            cached = _load_cached_course(course_api_path / f"{course.id}")
-        if cached is not None:
-            course.lectures = cached.lectures
-    return courses
-
-
-async def fetch_semester(
-    session: RequestSession,
-    curriculum_path: Path,
-    semester_id: str,
-    course_api_path: Path,
-    *,
-    refresh_lectures: bool = True,
-) -> bool:
-    semester_path = curriculum_path / semester_id
-    if not semester_path.exists():
-        semester_path.mkdir()
-
-    try:
-        incomplete_courses = await get_courses(session=session, semester_id=semester_id)
-    except Exception as e:
-        logger.exception("Failed to get courses for semester %s: %s", semester_id, e)
-        return False
-
-    save_json(incomplete_courses, semester_path / "courses.json")
-
-    try:
-        exams = await get_exams(session=session, semester_id=semester_id)
-    except Exception as e:
-        logger.exception("Failed to get exams for semester %s: %s", semester_id, e)
-        exams = {}
-
-    for course in incomplete_courses:
-        if course.id in exams:
-            course.exams = exams[course.id]
-
-    sem = asyncio.Semaphore(10)
-    progress_bar = tqdm(
-        total=len(incomplete_courses),
-        position=0,
-        leave=True,
-        desc=f"Processing semester id={semester_id}",
+    payload = await fetch_semesters_json(session=session)
+    response = TeachSemesterListResponse.model_validate(payload)
+    fetch_id = store.record_fetch(
+        source="catalog_teach_semester_list",
+        method="GET",
+        url=CATALOG_SEMESTER_URL,
     )
-    incomplete_courses_chunks = [
-        incomplete_courses[i : i + 100] for i in range(0, len(incomplete_courses), 100)
-    ]
-    lecture_refresh_failed = False
-
-    if not refresh_lectures:
-        logger.info("Skipping lecture refresh for semester %s", semester_id)
-
-    async def fetch_course_info(
-        session: RequestSession,
-        semester_path: Path,
-        incomplete_courses: list[Course],
-        sem,
-        progress_bar,
-        course_api_path: Path,
-    ):
-        nonlocal lecture_refresh_failed
-        async with sem:
-            if refresh_lectures:
-                try:
-                    courses = await update_lectures(session, incomplete_courses)
-                except Exception as e:
-                    lecture_refresh_failed = True
-                    logger.warning(
-                        (
-                            "Failed to update lectures for semester %s; "
-                            "keeping cached lectures where available: %s"
-                        ),
-                        semester_id,
-                        e,
-                    )
-                    courses = _keep_cached_lectures(
-                        incomplete_courses, semester_path, course_api_path
-                    )
-            else:
-                courses = _keep_cached_lectures(
-                    incomplete_courses, semester_path, course_api_path
-                )
-
-            for course in courses:
-                save_json(course, semester_path / f"{course.id}.json")
-                save_json(course, course_api_path / f"{course.id}")
-
-            progress_bar.update(len(incomplete_courses))
-
-    tasks = [
-        fetch_course_info(
-            session,
-            semester_path,
-            incomplete_courses_chunk,
-            sem,
-            progress_bar,
-            course_api_path,
-        )
-        for incomplete_courses_chunk in incomplete_courses_chunks
-    ]
-
-    with progress_bar:
-        await asyncio.gather(*tasks)
-
-    return lecture_refresh_failed
+    count = store.store_response(
+        table_name="catalog_teach_semester_list",
+        response=response,
+        fetch_id=fetch_id,
+    )
+    store.put_metadata({"catalog_teach_semester_list_count": count})
+    return parse_semesters(payload)
 
 
-async def make_curriculum(
-    *, mode: SemesterPullMode = "all", window_years: int = 1
+async def _store_catalog_departments(
+    session: RequestSession, store: SQLiteModelStore
 ) -> None:
-    curriculum_path = BUILD_DIR / "curriculum"
-    course_api_path = BUILD_DIR / "api" / "course"
-    if not curriculum_path.exists():
-        curriculum_path.mkdir(parents=True)
+    payload = await fetch_departments_json(session=session)
+    response = DepartmentCollegeTreeResponse.model_validate(payload)
+    fetch_id = store.record_fetch(
+        source="catalog_teach_department_college_tree",
+        method="GET",
+        url=CATALOG_DEPARTMENT_URL,
+    )
+    count = store.store_response(
+        table_name="catalog_teach_department_college_tree",
+        response=response,
+        fetch_id=fetch_id,
+    )
+    store.put_metadata({"catalog_teach_department_college_tree_count": count})
 
-    if not course_api_path.exists():
-        course_api_path.mkdir(parents=True)
 
-    async with USTCSession() as session:
-        existing_semesters = _load_existing_semesters(curriculum_path)
-        catalog_semesters = await get_semesters(session=session)
+async def _store_catalog_exams(
+    *,
+    session: RequestSession,
+    store: SQLiteModelStore,
+    semester_id: str,
+) -> None:
+    payload = await fetch_exams_json(session=session, semester_id=semester_id)
+    response = TeachExamListResponse.model_validate(payload)
+    fetch_id = store.record_fetch(
+        source="catalog_teach_exam_list",
+        method="GET",
+        url=f"{CATALOG_EXAM_URL_PREFIX}/{semester_id}",
+        context={"semester_id": semester_id},
+    )
+    store.store_response(
+        table_name="catalog_teach_exam_list",
+        response=response,
+        fetch_id=fetch_id,
+        context={"semester_id": semester_id},
+    )
+
+
+async def _store_jw_schedule_chunks(
+    *,
+    session: RequestSession,
+    store: SQLiteModelStore,
+    guesses: SQLiteGuessStore,
+    semester_id: str,
+    catalog_response: TeachLessonListResponse,
+    courses: list[Course],
+) -> None:
+    chunks = _course_chunks(courses)
+    if not chunks:
+        guesses.add_teacher_section_guesses(
+            semester_id=semester_id,
+            catalog_lessons=catalog_response,
+            jw_schedules=None,
+        )
+        return
+
+    schedule_responses: list[JwWsScheduleTableDatumResponse] = []
+    for chunk_index, chunk in enumerate(chunks):
         try:
-            departments = await get_departments(session=session)
-        except Exception as e:
-            logger.warning("Failed to get catalog departments: %s", e)
-            departments = _load_existing_departments(curriculum_path)
-        save_json(departments, curriculum_path / "departments.json")
-        semesters = _merge_semesters(
-            existing_semesters,
-            catalog_semesters,
-        )
-        save_json(semesters, curriculum_path / "semesters.json")
-
-        semesters = _select_semesters(
-            semesters,
-            mode=mode,
-            window_years=window_years,
-            curriculum_path=curriculum_path,
-        )
-
-        logger.info(
-            (
-                "Discovered %s semester(s): catalog=%s cached=%s; "
-                "refreshing %s semester(s) with mode=%s window_years=%s"
-            ),
-            len(_merge_semesters(catalog_semesters, existing_semesters)),
-            len(catalog_semesters),
-            len(existing_semesters),
-            len(semesters),
-            mode,
-            window_years,
-        )
-
-        lecture_refresh_enabled = True
-        for semester in tqdm(
-            semesters,
-            position=1,
-            leave=True,
-            desc="Processing semesters",
-        ):
-            lecture_refresh_failed = await fetch_semester(
-                session,
-                curriculum_path,
-                str(semester.id),
-                course_api_path,
-                refresh_lectures=lecture_refresh_enabled,
+            payload = await fetch_jw_schedule_table_json(
+                session=session,
+                course_list=chunk,
             )
-            if lecture_refresh_failed:
-                lecture_refresh_enabled = False
+        except JSONDecodeError as e:
+            store.record_fetch(
+                source="jw_ws_schedule_table_datum",
+                method="POST",
+                url=JW_SCHEDULE_TABLE_URL,
+                context={"semester_id": semester_id, "chunk_index": chunk_index},
+                ok=False,
+                error=str(e),
+            )
+            logger.warning(
+                "Skipping non-JSON JW schedule table response for semester %s chunk %s",
+                semester_id,
+                chunk_index,
+            )
+            continue
+
+        response = JwWsScheduleTableDatumResponse.model_validate(payload)
+        schedule_responses.append(response)
+        fetch_id = store.record_fetch(
+            source="jw_ws_schedule_table_datum",
+            method="POST",
+            url=JW_SCHEDULE_TABLE_URL,
+            context={"semester_id": semester_id, "chunk_index": chunk_index},
+        )
+        store.store_response(
+            table_name="jw_ws_schedule_table_datum",
+            response=response,
+            fetch_id=fetch_id,
+            context={"semester_id": semester_id, "chunk_index": chunk_index},
+        )
+
+    guesses.add_teacher_section_guesses(
+        semester_id=semester_id,
+        catalog_lessons=catalog_response,
+        jw_schedules=schedule_responses,
+    )
+
+
+async def _store_semester(
+    *,
+    session: RequestSession,
+    store: SQLiteModelStore,
+    guesses: SQLiteGuessStore,
+    semester_id: str,
+) -> None:
+    payload = await fetch_courses_json(session=session, semester_id=semester_id)
+    catalog_response = TeachLessonListResponse.model_validate(payload)
+    fetch_id = store.record_fetch(
+        source="catalog_teach_lesson_list_for_teach",
+        method="GET",
+        url=f"{CATALOG_LESSON_URL_PREFIX}/{semester_id}",
+        context={"semester_id": semester_id},
+    )
+    lesson_count = store.store_response(
+        table_name="catalog_teach_lesson_list_for_teach",
+        response=catalog_response,
+        fetch_id=fetch_id,
+        context={"semester_id": semester_id},
+    )
+    logger.info("Stored %s catalog lessons for semester %s", lesson_count, semester_id)
+
+    courses = parse_courses(payload)
+    await _store_catalog_exams(session=session, store=store, semester_id=semester_id)
+    await _store_jw_schedule_chunks(
+        session=session,
+        store=store,
+        guesses=guesses,
+        semester_id=semester_id,
+        catalog_response=catalog_response,
+        courses=courses,
+    )
+
+
+async def make_curriculum() -> None:
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    store = SQLiteModelStore(BUILD_DIR / SNAPSHOT_FILENAME)
+    guesses = SQLiteGuessStore(BUILD_DIR / GUESSES_FILENAME)
+
+    try:
+        _register_upstream_tables(store)
+        async with USTCSession() as session:
+            semesters = await _store_catalog_semesters(session=session, store=store)
+            await _store_catalog_departments(session=session, store=store)
+            store.put_metadata(
+                {
+                    "curriculum_mode": "all",
+                    "selected_semester_count": len(semesters),
+                }
+            )
+
+            logger.info(
+                "Discovered %s semester(s); refreshing complete SQLite snapshot",
+                len(semesters),
+            )
+
+            for semester in tqdm(
+                semesters,
+                position=1,
+                leave=True,
+                desc="Processing semesters",
+            ):
+                await _store_semester(
+                    session=session,
+                    store=store,
+                    guesses=guesses,
+                    semester_id=str(semester.id),
+                )
+    finally:
+        store.close()
+        guesses.close()

@@ -4,7 +4,6 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Any, Protocol
 
 from dotenv import load_dotenv
@@ -16,8 +15,6 @@ from patchright.async_api import (
     async_playwright,
 )
 from pyotp import TOTP, parse_uri
-
-from .tools import cache_dir_from_url, save_json
 
 
 class LoginState(Enum):
@@ -196,17 +193,7 @@ class RequestSession:
 
     async def get_json(self, url: str, **kwargs: Any):
         r = await self.get(url, **kwargs)
-
-        j = await r.json()
-
-        path = Path(f"{cache_dir_from_url(url)}.json")
-        if not path.parent.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-        save_json(j, path)
-
-        self.logger.info(f"cache write {path}")
-
-        return j
+        return await r.json()
 
     async def post_json(self, url: str, data: Any = None, **kwargs: Any):
         r = await self.post(url, data=data, **kwargs)

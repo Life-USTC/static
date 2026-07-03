@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pydantic import RootModel
 
-from pydantic import BaseModel, RootModel
+from .base import UpstreamBaseModel as BaseModel
 
 
 class ExamBatch(BaseModel):
@@ -98,7 +98,7 @@ class TeachExamListItem(BaseModel):
     examMode: str | None
     lesson: Lesson | None
     monitors: list[Monitor] | None
-    spvisors: list[Any] | None
+    spvisors: list[Monitor] | None
     grades: str | None
     adminclasseNames: str | None
 

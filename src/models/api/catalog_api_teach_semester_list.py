@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, RootModel
+from pydantic import RootModel
+
+from .base import UpstreamBaseModel as BaseModel
 
 
 class TeachSemesterListItem(BaseModel):
