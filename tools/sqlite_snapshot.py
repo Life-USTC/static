@@ -49,12 +49,29 @@ def _iter_semester_courses(build_dir: Path):
         for course_payload in base_courses:
             base_course = Course.model_validate(course_payload)
             detailed_path = api_root / str(base_course.id)
-            detailed_course = (
-                Course.model_validate(_read_json(detailed_path))
-                if detailed_path.exists()
-                else base_course
+            if not detailed_path.exists():
+                yield semester_dir.name, base_course
+                continue
+
+            detailed_course = Course.model_validate(_read_json(detailed_path))
+            yield (
+                semester_dir.name,
+                _merge_course_snapshot(
+                    base_course=base_course,
+                    detailed_course=detailed_course,
+                ),
             )
-            yield semester_dir.name, detailed_course
+
+
+def _merge_course_snapshot(*, base_course: Course, detailed_course: Course) -> Course:
+    return base_course.model_copy(
+        update={
+            "lectures": detailed_course.lectures,
+            "exams": detailed_course.exams or base_course.exams,
+            "additionalInfo": detailed_course.additionalInfo
+            or base_course.additionalInfo,
+        }
+    )
 
 
 def _load_bus_payload(build_dir: Path) -> dict:
