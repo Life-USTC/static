@@ -36,10 +36,18 @@ CATALOG_DEPARTMENT_URL = "https://catalog.ustc.edu.cn/api/teach/department/colle
 CATALOG_LESSON_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach"
 CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
 JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
+MIN_JW_SCHEDULE_SEMESTER_ID = 100
 
 
 def _course_chunks(courses: list[Course], chunk_size: int = 100) -> list[list[Course]]:
     return [courses[i : i + chunk_size] for i in range(0, len(courses), chunk_size)]
+
+
+def _should_fetch_jw_schedule_table(semester_id: str) -> bool:
+    try:
+        return int(semester_id) >= MIN_JW_SCHEDULE_SEMESTER_ID
+    except ValueError:
+        return True
 
 
 def _register_upstream_tables(store: SQLiteModelStore) -> None:
@@ -118,6 +126,19 @@ async def _store_jw_schedule_chunks(
     catalog_response: TeachLessonListResponse,
     courses: list[Course],
 ) -> None:
+    if not _should_fetch_jw_schedule_table(semester_id):
+        logger.info(
+            "Skipping JW schedule table for legacy semester %s below minimum id %s",
+            semester_id,
+            MIN_JW_SCHEDULE_SEMESTER_ID,
+        )
+        guesses.add_teacher_section_guesses(
+            semester_id=semester_id,
+            catalog_lessons=catalog_response,
+            jw_schedules=None,
+        )
+        return
+
     chunks = _course_chunks(courses)
     if not chunks:
         guesses.add_teacher_section_guesses(
@@ -222,6 +243,15 @@ async def make_curriculum() -> None:
                 {
                     "curriculum_mode": "all",
                     "selected_semester_count": len(semesters),
+                    "jw_schedule_min_semester_id": MIN_JW_SCHEDULE_SEMESTER_ID,
+                    "jw_schedule_selected_semester_count": sum(
+                        _should_fetch_jw_schedule_table(str(semester.id))
+                        for semester in semesters
+                    ),
+                    "jw_schedule_skipped_legacy_semester_count": sum(
+                        not _should_fetch_jw_schedule_table(str(semester.id))
+                        for semester in semesters
+                    ),
                 }
             )
 
