@@ -5,6 +5,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from patchright.async_api import (
@@ -23,6 +24,14 @@ class LoginState(Enum):
     FILL_TOTP = "FILL_TOTP"
     DONE = "DONE"
     UNKNOWN = "UNKNOWN"
+
+
+CATALOG_SSO_URL = (
+    "https://passport.ustc.edu.cn/login?"
+    "service=https://catalog.ustc.edu.cn/ustc_cas_login?next=https://catalog.ustc.edu.cn/"
+)
+JW_SSO_URL = "https://jw.ustc.edu.cn/ucas-sso/login"
+JW_COURSE_SELECT_URL = "https://jw.ustc.edu.cn/for-std/course-select"
 
 
 @dataclass(frozen=True)
@@ -262,9 +271,8 @@ class RequestSession:
 class USTCSession:
     """Context manager for USTC authentication and returns a RequestSession"""
 
-    def __init__(self, headless: bool = True, proxy: dict | None = None):
+    def __init__(self, headless: bool = True):
         self.headless = headless
-        self.proxy = proxy
         self.playwright: Playwright
         self.browser: Browser
         self.context: BrowserContext
@@ -283,14 +291,6 @@ class USTCSession:
                 "environment variables"
             )
         self.totp_url = os.getenv("USTC_PASSPORT_TOTP_URL", "")
-
-        if os.getenv("HTTP_PROXY_URL"):
-            self.proxy = {
-                "server": os.getenv("HTTP_PROXY_URL", ""),
-                "username": os.getenv("HTTP_PROXY_USERNAME", ""),
-                "password": os.getenv("HTTP_PROXY_PASSWORD", ""),
-                "bypass": "jw.ustc.edu.cn",
-            }
 
         if self.totp_url:
             self.totp = parse_uri(self.totp_url)  # type: ignore
@@ -473,13 +473,57 @@ class USTCSession:
         """Navigate to services after login"""
 
         await self.page.goto(
-            "https://passport.ustc.edu.cn/login?service=https://catalog.ustc.edu.cn/ustc_cas_login?next=https://catalog.ustc.edu.cn/",
+            CATALOG_SSO_URL,
             wait_until="networkidle",
             timeout=self.timeout_ms,
         )
+        await self._ensure_jw_session()
 
-        await self.page.goto(
-            "https://passport.ustc.edu.cn/login?service=https%3A%2F%2Fjw.ustc.edu.cn%2Fucas-sso%2Flogin",
-            wait_until="networkidle",
-            timeout=self.timeout_ms,
+    def _jw_user_id_from_url(self, url: str) -> str | None:
+        path = urlparse(url).path.rstrip("/")
+        user_id = path.split("/")[-1] if path else ""
+        return user_id if user_id.isnumeric() else None
+
+    async def _complete_passport_prompt_if_present(self) -> None:
+        for _ in range(self.login_config.state_max_turns):
+            state = await self._detect_login_state()
+            if state not in (LoginState.FILL_CREDENTIALS, LoginState.FILL_TOTP):
+                return
+
+            step = self.login_steps_by_state[state]
+            await step.act(self)
+            if self.login_config.turn_wait_ms > 0:
+                await self.page.wait_for_timeout(self.login_config.turn_wait_ms)
+
+        raise RuntimeError("Passport prompt did not clear during JW SSO")
+
+    async def _ensure_jw_session(self) -> None:
+        final_url = ""
+        for attempt in range(1, 4):
+            await self.page.goto(
+                JW_COURSE_SELECT_URL,
+                wait_until="networkidle",
+                timeout=self.timeout_ms,
+            )
+            final_url = self.page.url
+            user_id = self._jw_user_id_from_url(final_url)
+            if user_id:
+                self.logger.info("jw session ready user_id=%s", user_id)
+                return
+
+            self.logger.warning(
+                "jw session not ready on attempt %s; course-select url=%s",
+                attempt,
+                final_url,
+            )
+            await self.page.goto(
+                JW_SSO_URL,
+                wait_until="networkidle",
+                timeout=self.timeout_ms,
+            )
+            await self._complete_passport_prompt_if_present()
+            await self.page.wait_for_timeout(min(2_000 * attempt, 5_000))
+
+        raise RuntimeError(
+            "Failed to establish JW session; last course-select url=" + final_url
         )

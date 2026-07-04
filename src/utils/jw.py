@@ -15,8 +15,7 @@ from .tools import compose_start_end, join_nonempty
 
 _jw_user_id_cache: dict[int, str] = {}
 JW_SSO_URL = (
-    "https://passport.ustc.edu.cn/login?"
-    "service=https%3A%2F%2Fjw.ustc.edu.cn%2Fucas-sso%2Flogin"
+    "https://jw.ustc.edu.cn/ucas-sso/login"
 )
 
 indexStartTimes: dict[int, int] = {
