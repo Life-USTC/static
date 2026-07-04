@@ -43,14 +43,11 @@ jobs:
           USTC_PASSPORT_USERNAME: ${{ secrets.USTC_PASSPORT_USERNAME }}
           USTC_PASSPORT_PASSWORD: ${{ secrets.USTC_PASSPORT_PASSWORD }}
           USTC_PASSPORT_TOTP_URL: ${{ secrets.USTC_PASSPORT_TOTP_URL }}
-          HTTP_PROXY_URL: ${{ secrets.HTTP_PROXY_URL }}
-          HTTP_PROXY_USERNAME: ${{ secrets.HTTP_PROXY_USERNAME }}
-          HTTP_PROXY_PASSWORD: ${{ secrets.HTTP_PROXY_PASSWORD }}
         run: |
           uv run --no-dev python - <<'PY'
           import asyncio
           import json
-          import os
+          import logging
           import re
 
           from bs4 import BeautifulSoup
@@ -86,15 +83,12 @@ jobs:
               return compact(title.get_text()) if title else ""
 
           async def main() -> None:
-              print("has_http_proxy_url=" + str(bool(os.getenv("HTTP_PROXY_URL"))))
-              print(
-                  "has_http_proxy_credentials="
-                  + str(
-                      bool(os.getenv("HTTP_PROXY_USERNAME"))
-                      and bool(os.getenv("HTTP_PROXY_PASSWORD"))
-                  )
+              logging.basicConfig(
+                  level=logging.INFO,
+                  format="%(asctime)s %(levelname)s %(name)s: %(message)s",
               )
               async with USTCSession() as session:
+                  print("current_page_url=" + session.page.url)
                   cookies = await session.page.context.cookies()
                   print(
                       "jw_cookie_count="
@@ -160,9 +154,6 @@ jobs:
           USTC_PASSPORT_USERNAME: ${{ secrets.USTC_PASSPORT_USERNAME }}
           USTC_PASSPORT_PASSWORD: ${{ secrets.USTC_PASSPORT_PASSWORD }}
           USTC_PASSPORT_TOTP_URL: ${{ secrets.USTC_PASSPORT_TOTP_URL }}
-          HTTP_PROXY_URL: ${{ secrets.HTTP_PROXY_URL }}
-          HTTP_PROXY_USERNAME: ${{ secrets.HTTP_PROXY_USERNAME }}
-          HTTP_PROXY_PASSWORD: ${{ secrets.HTTP_PROXY_PASSWORD }}
         run: |
           uv run --no-dev python main.py
       - name: Verify SQLite snapshots and schemas
