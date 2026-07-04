@@ -7,12 +7,6 @@ on:
     branches:
       - master
   workflow_dispatch:
-    inputs:
-      debug_jw_datum:
-        description: "Run a short JW datum probe instead of the full import"
-        required: false
-        type: boolean
-        default: false
   repository_dispatch:
     types: [retry_job]
 
@@ -22,120 +16,7 @@ permissions:
   id-token: write
 
 jobs:
-  debug-jw-datum:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_jw_datum }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ github.repository }}
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
-      - name: Install dependencies
-        run: |
-          uv sync --no-dev
-          uv run --no-dev patchright install chromium
-      - name: Probe JW datum
-        env:
-          TZ: "Asia/Shanghai"
-          USTC_PASSPORT_USERNAME: ${{ secrets.USTC_PASSPORT_USERNAME }}
-          USTC_PASSPORT_PASSWORD: ${{ secrets.USTC_PASSPORT_PASSWORD }}
-          USTC_PASSPORT_TOTP_URL: ${{ secrets.USTC_PASSPORT_TOTP_URL }}
-        run: |
-          uv run --no-dev python - <<'PY'
-          import asyncio
-          import json
-          import logging
-          import re
-
-          from bs4 import BeautifulSoup
-
-          from src.utils.auth import USTCSession
-
-          LESSON_IDS = [
-              "123361", "123363", "123367", "123368", "123369", "123370",
-              "123371", "123372", "123376", "123378", "123379", "123380",
-              "123381", "123383", "123384", "123389", "123391", "123392",
-              "123399", "123402", "123403", "123404", "123405", "123408",
-              "123410", "123411", "123415", "123425", "123426", "123427",
-              "123428", "123429", "123432", "123439", "123440", "123441",
-              "123442", "123443", "123445", "123446", "123447", "123448",
-              "123449", "123450", "123451", "123452", "123453", "123454",
-              "123455", "123456", "123459", "123460", "123461", "123462",
-              "123463", "123464", "123465", "123466", "123467", "123468",
-              "123469", "123470", "123471", "123472", "123475", "123476",
-              "123477", "123478", "123479", "123480", "123481", "123482",
-              "123486", "123487", "123494", "123495", "123496", "123502",
-              "123503", "123504", "123505", "123506", "123508", "123509",
-              "123519", "123522", "123523", "123524", "123529", "123530",
-              "123531", "123532", "123533", "123534", "123535", "123536",
-              "123537", "123538", "123539", "123547",
-          ]
-
-          def compact(text: str) -> str:
-              return re.sub(r"\s+", " ", text).strip()
-
-          def html_title(text: str) -> str:
-              soup = BeautifulSoup(text, "html.parser")
-              title = soup.find("title")
-              return compact(title.get_text()) if title else ""
-
-          async def main() -> None:
-              logging.basicConfig(
-                  level=logging.INFO,
-                  format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-              )
-              async with USTCSession() as session:
-                  print("current_page_url=" + session.page.url)
-                  cookies = await session.page.context.cookies()
-                  print(
-                      "jw_cookie_count="
-                      + str(
-                          sum(
-                              1
-                              for cookie in cookies
-                              if "jw.ustc.edu.cn" in cookie["domain"]
-                          )
-                      )
-                  )
-                  response = await session.post(
-                      "https://jw.ustc.edu.cn/ws/schedule-table/datum",
-                      data={"lessonIds": LESSON_IDS},
-                      timeout=30_000,
-                      max_retries=0,
-                      transient_retries=0,
-                      fail_on_status_code=False,
-                  )
-                  text = await response.text()
-                  print("status=" + str(response.status))
-                  print("url=" + response.url)
-                  print("content_type=" + str(response.headers.get("content-type")))
-                  print("body_len=" + str(len(text)))
-                  try:
-                      payload = json.loads(text)
-                  except json.JSONDecodeError as e:
-                      print("json_ok=false")
-                      print("json_error=" + str(e))
-                      print("html_title=" + html_title(text))
-                      print("body_prefix=" + compact(text)[:300])
-                      return
-                  result = payload.get("result") or {}
-                  print("json_ok=true")
-                  print("top_level_keys=" + ",".join(sorted(payload.keys())))
-                  print("lessonList=" + str(len(result.get("lessonList") or [])))
-                  print("scheduleList=" + str(len(result.get("scheduleList") or [])))
-                  print(
-                      "scheduleGroupList="
-                      + str(len(result.get("scheduleGroupList") or []))
-                  )
-
-          asyncio.run(main())
-          PY
-
   update:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.debug_jw_datum }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -171,7 +52,7 @@ jobs:
           path: build/
 
   deploy:
-    if: ${{ github.ref == 'refs/heads/master' && (github.event_name != 'workflow_dispatch' || !inputs.debug_jw_datum) }}
+    if: github.ref == 'refs/heads/master'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
