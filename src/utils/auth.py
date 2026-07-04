@@ -497,6 +497,28 @@ class USTCSession:
 
         raise RuntimeError("Passport prompt did not clear during JW SSO")
 
+    async def _open_jw_sso(self) -> None:
+        login_link = self.page.locator("a", has_text="统一身份认证登录")
+        if "jw.ustc.edu.cn/login" in self.page.url and await login_link.count() > 0:
+            await login_link.first.click()
+            await self.page.wait_for_load_state(
+                "networkidle",
+                timeout=self.timeout_ms,
+            )
+        else:
+            await self.page.goto(
+                JW_SSO_URL,
+                wait_until="networkidle",
+                timeout=self.timeout_ms,
+            )
+
+        await self._complete_passport_prompt_if_present()
+        self.logger.info(
+            "jw sso returned url=%s title=%s",
+            self.page.url,
+            await self.page.title(),
+        )
+
     async def _ensure_jw_session(self) -> None:
         final_url = ""
         for attempt in range(1, 4):
@@ -516,12 +538,7 @@ class USTCSession:
                 attempt,
                 final_url,
             )
-            await self.page.goto(
-                JW_SSO_URL,
-                wait_until="networkidle",
-                timeout=self.timeout_ms,
-            )
-            await self._complete_passport_prompt_if_present()
+            await self._open_jw_sso()
             await self.page.wait_for_timeout(min(2_000 * attempt, 5_000))
 
         raise RuntimeError(
