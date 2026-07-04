@@ -1,6 +1,7 @@
 import logging
 from json import JSONDecodeError
 
+from patchright.async_api import Error
 from tqdm import tqdm
 
 from .guesses import SQLiteGuessStore
@@ -48,6 +49,20 @@ def _should_fetch_jw_schedule_table(semester_id: str) -> bool:
         return int(semester_id) >= MIN_JW_SCHEDULE_SEMESTER_ID
     except ValueError:
         return True
+
+
+def _is_skippable_exam_fetch_error(error: Error) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            " 502 ",
+            " 504 ",
+            "502 proxy error",
+            "504 gateway time-out",
+            "gateway time-out",
+        )
+    )
 
 
 def _register_upstream_tables(store: SQLiteModelStore) -> None:
@@ -101,12 +116,31 @@ async def _store_catalog_exams(
     store: SQLiteModelStore,
     semester_id: str,
 ) -> None:
-    payload = await fetch_exams_json(session=session, semester_id=semester_id)
+    url = f"{CATALOG_EXAM_URL_PREFIX}/{semester_id}"
+    try:
+        payload = await fetch_exams_json(session=session, semester_id=semester_id)
+    except Error as e:
+        if not _is_skippable_exam_fetch_error(e):
+            raise
+        store.record_fetch(
+            source="catalog_teach_exam_list",
+            method="GET",
+            url=url,
+            context={"semester_id": semester_id},
+            ok=False,
+            error=str(e),
+        )
+        logger.warning(
+            "Skipping catalog exams for semester %s after upstream 502/504",
+            semester_id,
+        )
+        return
+
     response = TeachExamListResponse.model_validate(payload)
     fetch_id = store.record_fetch(
         source="catalog_teach_exam_list",
         method="GET",
-        url=f"{CATALOG_EXAM_URL_PREFIX}/{semester_id}",
+        url=url,
         context={"semester_id": semester_id},
     )
     store.store_response(
