@@ -118,7 +118,11 @@ async def _store_catalog_exams(
 ) -> None:
     url = f"{CATALOG_EXAM_URL_PREFIX}/{semester_id}"
     try:
-        payload = await fetch_exams_json(session=session, semester_id=semester_id)
+        payload = await fetch_exams_json(
+            session=session,
+            semester_id=semester_id,
+            transient_retries=0,
+        )
     except Error as e:
         if not _is_skippable_exam_fetch_error(e):
             raise

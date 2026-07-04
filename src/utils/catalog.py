@@ -172,10 +172,12 @@ async def get_courses(session: RequestSession, semester_id: str) -> list[Course]
     return parse_courses(payload)
 
 
-async def fetch_exams_json(session: RequestSession, semester_id: str) -> list[dict]:
+async def fetch_exams_json(
+    session: RequestSession, semester_id: str, **request_kwargs
+) -> list[dict]:
     await asyncio.sleep(10)
     url = f"https://catalog.ustc.edu.cn/api/teach/exam/list/{semester_id}"
-    return await session.get_json(url=url)
+    return await session.get_json(url=url, **request_kwargs)
 
 
 def parse_exams(payload: list[dict]) -> dict[int, list[Exam]]:
