@@ -38,6 +38,16 @@ CATALOG_LESSON_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/lesson/list-f
 CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
 JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
 MIN_JW_SCHEDULE_SEMESTER_ID = 100
+CATALOG_EXAM_NO_RESULT_SEMESTER_IDS = {
+    "81",
+    "201",
+    "241",
+    "281",
+    "301",
+    "322",
+    "341",
+    "362",
+}
 
 
 def _course_chunks(courses: list[Course], chunk_size: int = 100) -> list[list[Course]]:
@@ -49,6 +59,10 @@ def _should_fetch_jw_schedule_table(semester_id: str) -> bool:
         return int(semester_id) >= MIN_JW_SCHEDULE_SEMESTER_ID
     except ValueError:
         return True
+
+
+def _should_fetch_catalog_exams(semester_id: str) -> bool:
+    return semester_id not in CATALOG_EXAM_NO_RESULT_SEMESTER_IDS
 
 
 def _is_skippable_exam_fetch_error(error: Error) -> bool:
@@ -117,6 +131,13 @@ async def _store_catalog_exams(
     semester_id: str,
 ) -> None:
     url = f"{CATALOG_EXAM_URL_PREFIX}/{semester_id}"
+    if not _should_fetch_catalog_exams(semester_id):
+        logger.info(
+            "Skipping catalog exams for known no-result semester %s",
+            semester_id,
+        )
+        return
+
     try:
         payload = await fetch_exams_json(
             session=session,
@@ -277,6 +298,12 @@ async def make_curriculum() -> None:
         async with USTCSession() as session:
             semesters = await _store_catalog_semesters(session=session, store=store)
             await _store_catalog_departments(session=session, store=store)
+            semester_ids = {str(semester.id) for semester in semesters}
+            skipped_catalog_exam_semester_ids = [
+                semester_id
+                for semester_id in sorted(CATALOG_EXAM_NO_RESULT_SEMESTER_IDS, key=int)
+                if semester_id in semester_ids
+            ]
             store.put_metadata(
                 {
                     "curriculum_mode": "all",
@@ -289,6 +316,13 @@ async def make_curriculum() -> None:
                     "jw_schedule_skipped_legacy_semester_count": sum(
                         not _should_fetch_jw_schedule_table(str(semester.id))
                         for semester in semesters
+                    ),
+                    "catalog_exam_skipped_no_result_semester_count": sum(
+                        not _should_fetch_catalog_exams(str(semester.id))
+                        for semester in semesters
+                    ),
+                    "catalog_exam_skipped_no_result_semester_ids": ",".join(
+                        skipped_catalog_exam_semester_ids
                     ),
                 }
             )
