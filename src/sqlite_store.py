@@ -72,11 +72,13 @@ def _scalar_value(value: object) -> object:
 
 
 class SQLiteModelStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path | str, *, reset: bool = True):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.exists():
-            self.path.unlink()
+        if path != ":memory:":
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if reset and self.path.exists():
+                self.path.unlink()
 
         self.conn = sqlite3.connect(self.path)
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -92,12 +94,12 @@ class SQLiteModelStore:
     def _create_base_schema(self) -> None:
         self.conn.executescript(
             """
-            CREATE TABLE metadata (
+            CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
 
-            CREATE TABLE upstream_fetches (
+            CREATE TABLE IF NOT EXISTS upstream_fetches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source TEXT NOT NULL,
                 method TEXT NOT NULL,
@@ -110,12 +112,53 @@ class SQLiteModelStore:
             """
         )
         self.conn.executemany(
-            "INSERT INTO metadata(key, value) VALUES(?, ?)",
+            """
+            INSERT INTO metadata(key, value) VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
             [
                 ("schema_version", str(SCHEMA_VERSION)),
                 ("generated_at", datetime.now(UTC).isoformat()),
             ],
         )
+
+    def delete_fetches(self, fetch_ids: list[int]) -> None:
+        if not fetch_ids:
+            return
+
+        placeholders = ", ".join("?" for _ in fetch_ids)
+        for table_name in self._tables_with_column("fetch_id"):
+            self.conn.execute(
+                f"DELETE FROM {_quote_identifier(table_name)} "
+                f"WHERE fetch_id IN ({placeholders})",
+                fetch_ids,
+            )
+        self.conn.execute(
+            f"DELETE FROM upstream_fetches WHERE id IN ({placeholders})",
+            fetch_ids,
+        )
+
+    def _tables_with_column(self, column_name: str) -> list[str]:
+        table_names = [
+            row[0]
+            for row in self.conn.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                """
+            )
+        ]
+        result = []
+        for table_name in table_names:
+            columns = {
+                row[1]
+                for row in self.conn.execute(
+                    f"PRAGMA table_info({_quote_identifier(table_name)})"
+                )
+            }
+            if column_name in columns:
+                result.append(table_name)
+        return result
 
     def record_fetch(
         self,
