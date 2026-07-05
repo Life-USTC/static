@@ -4,6 +4,7 @@ from src.curriculum import (
     _selected_curriculum_semesters,
     _should_fetch_catalog_exams,
     _should_fetch_catalog_lessons,
+    _should_fetch_jw_schedule_table,
 )
 from src.models.semester import Semester
 
@@ -21,10 +22,10 @@ def _semester(semester_id: str) -> Semester:
 class CatalogLessonFetchTest(unittest.TestCase):
     def test_skips_semesters_below_minimum_lesson_id(self) -> None:
         self.assertFalse(_should_fetch_catalog_lessons("53"))
-        self.assertFalse(_should_fetch_catalog_lessons("61"))
+        self.assertFalse(_should_fetch_catalog_lessons("202"))
 
     def test_fetches_semesters_at_or_above_minimum_lesson_id(self) -> None:
-        self.assertTrue(_should_fetch_catalog_lessons("62"))
+        self.assertTrue(_should_fetch_catalog_lessons("221"))
         self.assertTrue(_should_fetch_catalog_lessons("381"))
 
     def test_fetches_non_numeric_semester_ids(self) -> None:
@@ -32,10 +33,20 @@ class CatalogLessonFetchTest(unittest.TestCase):
 
     def test_selected_curriculum_semesters_filter_legacy_ids(self) -> None:
         selected = _selected_curriculum_semesters(
-            [_semester("53"), _semester("61"), _semester("62"), _semester("381")]
+            [_semester("202"), _semester("221"), _semester("381")]
         )
 
-        self.assertEqual([semester.id for semester in selected], ["62", "381"])
+        self.assertEqual([semester.id for semester in selected], ["221", "381"])
+
+
+class JwScheduleFetchTest(unittest.TestCase):
+    def test_fetches_schedule_for_any_selected_semester_id(self) -> None:
+        self.assertTrue(_should_fetch_jw_schedule_table("2"))
+        self.assertTrue(_should_fetch_jw_schedule_table("81"))
+        self.assertTrue(_should_fetch_jw_schedule_table("221"))
+
+    def test_fetches_schedule_for_non_numeric_semester_ids(self) -> None:
+        self.assertTrue(_should_fetch_jw_schedule_table("latest"))
 
 
 class CatalogExamFetchTest(unittest.TestCase):

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -7,11 +8,11 @@ from enum import Enum
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
+import httpx
 from dotenv import load_dotenv
 from patchright.async_api import (
     Browser,
     BrowserContext,
-    Error,
     Page,
     Playwright,
     async_playwright,
@@ -151,14 +152,30 @@ async def _act_totp_step(session: "USTCSession") -> None:
 
 
 class RequestSession:
+    class _Response:
+        def __init__(self, response: httpx.Response):
+            self._response = response
+            self.url = str(response.url)
+            self.status = response.status_code
+            self.headers = response.headers
+
+        async def json(self) -> Any:
+            return self._response.json()
+
+        async def text(self) -> str:
+            return self._response.text
+
     def __init__(
         self,
-        page: Page,
+        *,
+        client: httpx.AsyncClient,
+        page: Page | None,
         timeout_ms: int = 10 * 60 * 1000,
         fail_on_status_code: bool = True,
         max_retries: int = 100,
         transient_retries: int = 3,
     ):
+        self.client = client
         self.page = page
         self.timeout_ms = timeout_ms
         self.fail_on_status_code = fail_on_status_code
@@ -166,7 +183,9 @@ class RequestSession:
         self.transient_retries = transient_retries
         self.logger = logging.getLogger(__name__)
 
-    def _is_transient_request_error(self, e: Error) -> bool:
+    def _is_transient_request_error(self, e: Exception) -> bool:
+        if isinstance(e, httpx.HTTPStatusError):
+            return e.response.status_code in {429, 500, 502, 503, 504}
         message = str(e).lower()
         return any(
             marker in message
@@ -187,19 +206,24 @@ class RequestSession:
     def _request_retry_wait_ms(self, attempt: int) -> int:
         return min(2_000 * attempt, 10_000)
 
+    def _timeout_seconds(self, timeout_ms: int) -> float | None:
+        if timeout_ms <= 0:
+            return None
+        return timeout_ms / 1000
+
     async def _request_with_transient_retries(
         self,
         *,
         method: str,
         url: str,
-        request: Callable[[], Awaitable[Any]],
+        request: Callable[[], Awaitable[httpx.Response]],
         retries: int,
-    ):
+    ) -> "RequestSession._Response":
         for attempt in range(1, retries + 2):
             self.logger.info(f"{method} {url}")
             try:
                 r = await request()
-            except Error as e:
+            except httpx.HTTPError as e:
                 if attempt > retries or not self._is_transient_request_error(e):
                     raise
                 wait_ms = self._request_retry_wait_ms(attempt)
@@ -212,50 +236,66 @@ class RequestSession:
                     wait_ms,
                     e,
                 )
-                await self.page.wait_for_timeout(wait_ms)
+                await asyncio.sleep(wait_ms / 1000)
                 continue
 
             self.logger.info(f"{method} {url} done")
-            return r
+            return self._Response(r)
 
         raise RuntimeError(f"{method} {url} retry loop exhausted")
 
     async def get(self, url: str, **kwargs: Any):
+        timeout_ms = kwargs.get("timeout", self.timeout_ms)
+        fail_on_status_code = kwargs.get(
+            "fail_on_status_code", self.fail_on_status_code
+        )
         params: dict[str, Any] = {
             "url": url,
-            "timeout": kwargs.get("timeout", self.timeout_ms),
-            "fail_on_status_code": kwargs.get(
-                "fail_on_status_code", self.fail_on_status_code
-            ),
-            "max_retries": kwargs.get("max_retries", self.max_retries),
+            "timeout": self._timeout_seconds(timeout_ms),
         }
         if "headers" in kwargs and kwargs["headers"] is not None:
             params["headers"] = kwargs["headers"]
+
+        async def request() -> httpx.Response:
+            response = await self.client.get(**params)
+            if fail_on_status_code:
+                response.raise_for_status()
+            return response
 
         return await self._request_with_transient_retries(
             method="GET",
             url=url,
-            request=lambda: self.page.request.get(**params),
+            request=request,
             retries=kwargs.get("transient_retries", self.transient_retries),
         )
 
     async def post(self, url: str, data: Any = None, **kwargs: Any):
+        timeout_ms = kwargs.get("timeout", self.timeout_ms)
+        fail_on_status_code = kwargs.get(
+            "fail_on_status_code", self.fail_on_status_code
+        )
         params: dict[str, Any] = {
             "url": url,
-            "data": data,
-            "timeout": kwargs.get("timeout", self.timeout_ms),
-            "fail_on_status_code": kwargs.get(
-                "fail_on_status_code", self.fail_on_status_code
-            ),
-            "max_retries": kwargs.get("max_retries", self.max_retries),
+            "timeout": self._timeout_seconds(timeout_ms),
         }
         if "headers" in kwargs and kwargs["headers"] is not None:
             params["headers"] = kwargs["headers"]
 
+        if kwargs.get("json_body"):
+            params["json"] = data
+        else:
+            params["data"] = data
+
+        async def request() -> httpx.Response:
+            response = await self.client.post(**params)
+            if fail_on_status_code:
+                response.raise_for_status()
+            return response
+
         return await self._request_with_transient_retries(
             method="POST",
             url=url,
-            request=lambda: self.page.request.post(**params),
+            request=request,
             retries=kwargs.get("transient_retries", self.transient_retries),
         )
 
@@ -264,8 +304,49 @@ class RequestSession:
         return await r.json()
 
     async def post_json(self, url: str, data: Any = None, **kwargs: Any):
-        r = await self.post(url, data=data, **kwargs)
+        r = await self.post(url, data=data, json_body=True, **kwargs)
         return await r.json()
+
+    async def sync_cookies_from_page(self) -> None:
+        if not self.page:
+            return
+        _add_browser_cookies_to_jar(
+            self.client.cookies,
+            await self.page.context.cookies(),
+        )
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+
+def _add_browser_cookies_to_jar(
+    jar: httpx.Cookies, browser_cookies: list[dict[str, Any]]
+) -> None:
+    for cookie in browser_cookies:
+        name = cookie.get("name")
+        value = cookie.get("value")
+        if not name or value is None:
+            continue
+        jar.set(
+            name,
+            value,
+            domain=cookie.get("domain") or "",
+            path=cookie.get("path") or "/",
+        )
+
+
+def _create_request_http_client(
+    *, cookies: httpx.Cookies, user_agent: str
+) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        cookies=cookies,
+        follow_redirects=True,
+        trust_env=False,
+        headers={
+            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "user-agent": user_agent,
+        },
+    )
 
 
 class USTCSession:
@@ -277,6 +358,7 @@ class USTCSession:
         self.browser: Browser
         self.context: BrowserContext
         self.page: Page
+        self.request_session: RequestSession | None = None
         self.totp: TOTP | None = None
         self.logger = logging.getLogger(__name__)
 
@@ -325,10 +407,20 @@ class USTCSession:
         await self._login()
         await self._after_login()
 
-        return RequestSession(self.page)
+        client = await self._create_http_client()
+        timeout_ms = self.timeout_ms if self.timeout_ms > 0 else 10 * 60 * 1000
+        self.request_session = RequestSession(
+            client=client,
+            page=self.page,
+            timeout_ms=timeout_ms,
+        )
+        return self.request_session
 
     async def __aexit__(self, exc_type, exc, tb):
         """Cleanup browser resources"""
+        with suppress(Exception):
+            if self.request_session:
+                await self.request_session.close()
         with suppress(Exception):
             await self.page.close()
         with suppress(Exception):
@@ -478,6 +570,12 @@ class USTCSession:
             timeout=self.timeout_ms,
         )
         await self._ensure_jw_session()
+
+    async def _create_http_client(self) -> httpx.AsyncClient:
+        user_agent = await self.page.evaluate("navigator.userAgent")
+        cookies = httpx.Cookies()
+        _add_browser_cookies_to_jar(cookies, await self.context.cookies())
+        return _create_request_http_client(cookies=cookies, user_agent=user_agent)
 
     def _jw_user_id_from_url(self, url: str) -> str | None:
         path = urlparse(url).path.rstrip("/")

@@ -1,7 +1,6 @@
 import logging
 from json import JSONDecodeError
 
-from patchright.async_api import Error
 from tqdm import tqdm
 
 from .guesses import SQLiteGuessStore
@@ -37,8 +36,7 @@ CATALOG_DEPARTMENT_URL = "https://catalog.ustc.edu.cn/api/teach/department/colle
 CATALOG_LESSON_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach"
 CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
 JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
-MIN_CATALOG_LESSON_SEMESTER_ID = 62
-MIN_JW_SCHEDULE_SEMESTER_ID = 100
+MIN_CATALOG_LESSON_SEMESTER_ID = 221
 MIN_CATALOG_EXAM_SEMESTER_ID = 381
 
 
@@ -58,7 +56,7 @@ def _should_fetch_catalog_lessons(semester_id: str) -> bool:
 
 
 def _should_fetch_jw_schedule_table(semester_id: str) -> bool:
-    return _is_semester_at_or_after(semester_id, MIN_JW_SCHEDULE_SEMESTER_ID)
+    return True
 
 
 def _should_fetch_catalog_exams(semester_id: str) -> bool:
@@ -80,7 +78,7 @@ def _selected_curriculum_semesters(semesters: list[Semester]) -> list[Semester]:
     ]
 
 
-def _is_skippable_exam_fetch_error(error: Error) -> bool:
+def _is_skippable_exam_fetch_error(error: Exception) -> bool:
     message = str(error).lower()
     return any(
         marker in message
@@ -160,7 +158,7 @@ async def _store_catalog_exams(
             semester_id=semester_id,
             transient_retries=0,
         )
-    except Error as e:
+    except Exception as e:
         if not _is_skippable_exam_fetch_error(e):
             raise
         store.record_fetch(
@@ -201,19 +199,6 @@ async def _store_jw_schedule_chunks(
     catalog_response: TeachLessonListResponse,
     courses: list[Course],
 ) -> None:
-    if not _should_fetch_jw_schedule_table(semester_id):
-        logger.info(
-            "Skipping JW schedule table for legacy semester %s below minimum id %s",
-            semester_id,
-            MIN_JW_SCHEDULE_SEMESTER_ID,
-        )
-        guesses.add_teacher_section_guesses(
-            semester_id=semester_id,
-            catalog_lessons=catalog_response,
-            jw_schedules=None,
-        )
-        return
-
     chunks = _course_chunks(courses)
     if not chunks:
         guesses.add_teacher_section_guesses(
@@ -337,7 +322,7 @@ async def make_curriculum() -> None:
                     "catalog_lesson_skipped_legacy_semester_ids": ",".join(
                         skipped_catalog_lesson_semester_ids
                     ),
-                    "jw_schedule_min_semester_id": MIN_JW_SCHEDULE_SEMESTER_ID,
+                    "jw_schedule_min_semester_id": "selected_catalog_lessons",
                     "jw_schedule_selected_semester_count": sum(
                         _should_fetch_jw_schedule_table(str(semester.id))
                         for semester in selected_semesters

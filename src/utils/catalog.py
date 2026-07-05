@@ -1,5 +1,3 @@
-import asyncio
-
 from ..models import Course, Department, Exam, Semester, TeacherAssignment
 from ..models.api.catalog_api_teach_exam_list import TeachExamListResponse
 from ..models.api.catalog_api_teach_lesson_list_for_teach import (
@@ -97,7 +95,6 @@ async def get_departments(session: RequestSession) -> list[Department]:
 
 
 async def fetch_courses_json(session: RequestSession, semester_id: str) -> list[dict]:
-    await asyncio.sleep(10)
     url = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach/" + semester_id
     return await session.get_json(url=url)
 
@@ -175,7 +172,6 @@ async def get_courses(session: RequestSession, semester_id: str) -> list[Course]
 async def fetch_exams_json(
     session: RequestSession, semester_id: str, **request_kwargs
 ) -> list[dict]:
-    await asyncio.sleep(10)
     url = f"https://catalog.ustc.edu.cn/api/teach/exam/list/{semester_id}"
     return await session.get_json(url=url, **request_kwargs)
 

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from bs4 import BeautifulSoup
@@ -101,12 +100,15 @@ async def _get_jw_user_id(session: RequestSession) -> str:
             attempt,
             final_url,
         )
+        if not session.page:
+            break
         await session.page.goto(
             JW_SSO_URL,
             wait_until="networkidle",
             timeout=session.timeout_ms,
         )
         await session.page.wait_for_timeout(min(2_000 * attempt, 5_000))
+        await session.sync_cookies_from_page()
 
     raise ValueError(f"Failed to get jw user id from url: {final_url}")
 
@@ -152,7 +154,6 @@ async def get_jw_semesters(session: RequestSession) -> list[Semester]:
 
 
 async def fetch_jw_courses_json(session: RequestSession, semester_id: str) -> dict:
-    await asyncio.sleep(10)
     user_id = await _get_jw_user_id(session=session)
     query = (
         "courseCodeLike=&codeLike=&educationAssoc=&courseNameZhLike=&teacherNameLike=&"
