@@ -14,6 +14,8 @@ SNAPSHOT_FILENAME = "life-ustc-static.sqlite"
 GUESSES_FILENAME = "life-ustc-static-guesses.sqlite"
 
 Scalar = str | int | float | bool
+JsonScalar = str | int | float | bool | None
+JsonValue = Mapping[str, object] | list[object] | JsonScalar
 
 
 def _quote_identifier(value: str) -> str:
@@ -69,6 +71,18 @@ def _scalar_value(value: object) -> object:
     if isinstance(value, bool):
         return int(value)
     return value
+
+
+def _json_column_type(value: object) -> str:
+    if value is None:
+        return "TEXT"
+    if isinstance(value, bool):
+        return "INTEGER"
+    if isinstance(value, int):
+        return "INTEGER"
+    if isinstance(value, float):
+        return "REAL"
+    return "TEXT"
 
 
 class SQLiteModelStore:
@@ -255,6 +269,21 @@ class SQLiteModelStore:
 
         self._insert_model(table_name, response, fetch_id=fetch_id, context=context)
         return 1
+
+    def store_json_response(
+        self,
+        *,
+        table_name: str,
+        payload: JsonValue,
+        fetch_id: int,
+        context: Mapping[str, Scalar | None] | None = None,
+    ) -> int:
+        return self._insert_json_value(
+            table_name,
+            payload,
+            fetch_id=fetch_id,
+            context=context or {},
+        )
 
     def _ensure_response_schema(
         self,
@@ -550,3 +579,141 @@ class SQLiteModelStore:
             f"VALUES({placeholders})",
             [values[name] for name in column_names],
         )
+
+    def _insert_json_value(
+        self,
+        table_name: str,
+        value: JsonValue,
+        *,
+        fetch_id: int,
+        context: Mapping[str, Scalar | None],
+        parent_store_id: int | None = None,
+        position: int | None = None,
+    ) -> int:
+        if isinstance(value, Mapping):
+            self._insert_json_object(
+                table_name,
+                value,
+                fetch_id=fetch_id,
+                context=context,
+                parent_store_id=parent_store_id,
+                position=position,
+            )
+            return 1
+
+        if isinstance(value, list):
+            count = 0
+            for item_position, item in enumerate(value):
+                count += self._insert_json_value(
+                    table_name,
+                    item,  # type: ignore[arg-type]
+                    fetch_id=fetch_id,
+                    context=context,
+                    parent_store_id=parent_store_id,
+                    position=item_position,
+                )
+            return count
+
+        self._insert_json_scalar(
+            table_name,
+            value,
+            fetch_id=fetch_id,
+            context=context,
+            parent_store_id=parent_store_id,
+            position=position,
+        )
+        return 1
+
+    def _json_base_row(
+        self,
+        *,
+        fetch_id: int,
+        context: Mapping[str, Scalar | None],
+        parent_store_id: int | None,
+        position: int | None,
+    ) -> tuple[dict[str, str], dict[str, object]]:
+        columns: dict[str, str] = {"fetch_id": "INTEGER NOT NULL"}
+        values: dict[str, object] = {"fetch_id": fetch_id}
+
+        if parent_store_id is not None:
+            columns["parent_store_id"] = "INTEGER NOT NULL"
+            values["parent_store_id"] = parent_store_id
+        if position is not None:
+            columns["position"] = "INTEGER NOT NULL"
+            values["position"] = position
+
+        for key, context_value in context.items():
+            columns[key] = _json_column_type(context_value)
+            values[key] = _scalar_value(context_value)
+
+        return columns, values
+
+    def _insert_json_object(
+        self,
+        table_name: str,
+        value: Mapping[str, object],
+        *,
+        fetch_id: int,
+        context: Mapping[str, Scalar | None],
+        parent_store_id: int | None,
+        position: int | None,
+    ) -> int:
+        columns, values = self._json_base_row(
+            fetch_id=fetch_id,
+            context=context,
+            parent_store_id=parent_store_id,
+            position=position,
+        )
+        nested_items: list[tuple[str, JsonValue]] = []
+
+        for key, item in value.items():
+            if isinstance(item, Mapping | list):
+                nested_items.append((key, item))  # type: ignore[arg-type]
+                continue
+            columns[key] = _json_column_type(item)
+            values[key] = _scalar_value(item)
+
+        store_id = self._insert_row(table_name, columns, values)
+        for key, item in nested_items:
+            self._insert_json_value(
+                f"{table_name}_{key}",
+                item,
+                fetch_id=fetch_id,
+                context=context,
+                parent_store_id=store_id,
+            )
+        return store_id
+
+    def _insert_json_scalar(
+        self,
+        table_name: str,
+        value: JsonScalar,
+        *,
+        fetch_id: int,
+        context: Mapping[str, Scalar | None],
+        parent_store_id: int | None,
+        position: int | None,
+    ) -> None:
+        columns, values = self._json_base_row(
+            fetch_id=fetch_id,
+            context=context,
+            parent_store_id=parent_store_id,
+            position=position,
+        )
+        columns["value"] = _json_column_type(value)
+        values["value"] = _scalar_value(value)
+        self._insert_row(table_name, columns, values)
+
+    def _insert_row(
+        self, table_name: str, columns: Mapping[str, str], values: Mapping[str, object]
+    ) -> int:
+        self._ensure_table(table_name, columns)
+        column_names = list(values.keys())
+        placeholders = ", ".join("?" for _ in column_names)
+        cursor = self.conn.execute(
+            f"INSERT INTO {_quote_identifier(table_name)} "
+            f"({', '.join(_quote_identifier(name) for name in column_names)}) "
+            f"VALUES({placeholders})",
+            [values[name] for name in column_names],
+        )
+        return int(cursor.lastrowid)

@@ -4,7 +4,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from src import make_curriculum, make_rss
+from src import make_curriculum, make_rss, make_young_events
 from tools.upstream_schemas import export_upstream_schemas
 
 
@@ -20,6 +20,11 @@ def main() -> None:
         action="store_true",
         help="Generate curriculum data",
     )
+    parser.add_argument(
+        "--young",
+        action="store_true",
+        help="Generate Young event data",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -33,21 +38,21 @@ def main() -> None:
     static_dir = base_dir / "static"
     shutil.copytree(static_dir, build_dir, dirs_exist_ok=True)
 
-    run_all = not args.rss and not args.curriculum
+    run_all = not args.rss and not args.curriculum and not args.young
     run_rss = args.rss or run_all
     run_curriculum = args.curriculum or run_all
-
-    tasks = []
-    if run_rss:
-        tasks.append(make_rss())
-    if run_curriculum:
-        tasks.append(make_curriculum())
+    run_young = args.young or run_all
 
     async def _run():
-        await asyncio.gather(*tasks)
+        if run_rss:
+            await make_rss()
+        if run_curriculum:
+            await make_curriculum()
+        if run_young:
+            await make_young_events()
 
     asyncio.run(_run())
-    if run_curriculum:
+    if run_curriculum or run_young:
         schema_paths = export_upstream_schemas(build_dir / "schemas" / "upstream")
         logging.info("Exported %s upstream JSON schemas", len(schema_paths))
 
