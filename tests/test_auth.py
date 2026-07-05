@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import httpx
 
-from src.utils.auth import RequestSession, _create_request_http_client
+from src.utils.auth import RequestSession, USTCSession, _create_request_http_client
 
 
 class RequestSessionTest(unittest.IsolatedAsyncioTestCase):
@@ -76,6 +76,34 @@ class RequestSessionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(seen_payload, {"lessonIds": ["1"]})
         finally:
             await client.aclose()
+
+
+class USTCSessionConfigTest(unittest.TestCase):
+    def test_after_login_services_default_to_enabled(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "USTC_PASSPORT_USERNAME": "user",
+                "USTC_PASSPORT_PASSWORD": "password",
+                "USTC_PASSPORT_TOTP_URL": "",
+            },
+        ):
+            session = USTCSession()
+
+        self.assertTrue(session.after_login_services)
+
+    def test_after_login_services_can_be_disabled(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "USTC_PASSPORT_USERNAME": "user",
+                "USTC_PASSPORT_PASSWORD": "password",
+                "USTC_PASSPORT_TOTP_URL": "",
+            },
+        ):
+            session = USTCSession(after_login_services=False)
+
+        self.assertFalse(session.after_login_services)
 
 
 if __name__ == "__main__":

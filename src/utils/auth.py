@@ -352,8 +352,9 @@ def _create_request_http_client(
 class USTCSession:
     """Context manager for USTC authentication and returns a RequestSession"""
 
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, *, after_login_services: bool = True):
         self.headless = headless
+        self.after_login_services = after_login_services
         self.playwright: Playwright
         self.browser: Browser
         self.context: BrowserContext
@@ -405,7 +406,8 @@ class USTCSession:
         self.page = await self.context.new_page()
 
         await self._login()
-        await self._after_login()
+        if self.after_login_services:
+            await self._after_login()
 
         client = await self._create_http_client()
         timeout_ms = self.timeout_ms if self.timeout_ms > 0 else 10 * 60 * 1000
