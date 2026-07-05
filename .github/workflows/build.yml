@@ -11,6 +11,7 @@ on:
     types: [retry_job]
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -29,6 +30,37 @@ jobs:
         run: |
           uv sync --no-dev
           uv run --no-dev patchright install chromium
+      - name: Restore previous Pages artifact cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow build.yml \
+            --branch master \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId // empty')"
+          if [ -z "$run_id" ]; then
+            echo "No previous successful build artifact found"
+            exit 0
+          fi
+
+          mkdir -p /tmp/previous-pages build
+          if ! gh run download "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name github-pages \
+            --dir /tmp/previous-pages; then
+            echo "Previous build artifact $run_id is unavailable"
+            exit 0
+          fi
+
+          if [ -f /tmp/previous-pages/artifact.tar ]; then
+            tar -xf /tmp/previous-pages/artifact.tar -C build
+            echo "Restored previous build artifact $run_id"
+          fi
       - name: Run Program
         env:
           TZ: "Asia/Shanghai"

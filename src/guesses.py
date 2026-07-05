@@ -15,21 +15,21 @@ from .sqlite_store import GUESSES_FILENAME, SCHEMA_VERSION
 
 
 class SQLiteGuessStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, reset: bool = True):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.exists():
+        if reset and self.path.exists():
             self.path.unlink()
 
         self.conn = sqlite3.connect(self.path)
         self.conn.executescript(
             """
-            CREATE TABLE metadata (
+            CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
 
-            CREATE TABLE teacher_section_guesses (
+            CREATE TABLE IF NOT EXISTS teacher_section_guesses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 semester_id TEXT NOT NULL,
                 lesson_id INTEGER NOT NULL,
@@ -44,14 +44,17 @@ class SQLiteGuessStore:
                 reason TEXT NOT NULL
             );
 
-            CREATE INDEX teacher_section_guesses_lesson_idx
+            CREATE INDEX IF NOT EXISTS teacher_section_guesses_lesson_idx
                 ON teacher_section_guesses(semester_id, lesson_id);
-            CREATE INDEX teacher_section_guesses_teacher_idx
+            CREATE INDEX IF NOT EXISTS teacher_section_guesses_teacher_idx
                 ON teacher_section_guesses(teacher_name, departmentCode);
             """
         )
         self.conn.executemany(
-            "INSERT INTO metadata(key, value) VALUES(?, ?)",
+            """
+            INSERT INTO metadata(key, value) VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
             [
                 ("schema_version", str(SCHEMA_VERSION)),
                 ("generated_at", datetime.now(UTC).isoformat()),
@@ -62,6 +65,12 @@ class SQLiteGuessStore:
     def close(self) -> None:
         self.conn.commit()
         self.conn.close()
+
+    def delete_semester(self, semester_id: str) -> None:
+        self.conn.execute(
+            "DELETE FROM teacher_section_guesses WHERE semester_id = ?",
+            (semester_id,),
+        )
 
     def add_teacher_section_guesses(
         self,

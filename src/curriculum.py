@@ -1,4 +1,5 @@
 import logging
+import time
 from json import JSONDecodeError
 
 from tqdm import tqdm
@@ -76,6 +77,135 @@ def _selected_curriculum_semesters(semesters: list[Semester]) -> list[Semester]:
         for semester in semesters
         if _should_fetch_catalog_lessons(str(semester.id))
     ]
+
+
+def _semester_has_ended(semester: Semester, now_timestamp: int) -> bool:
+    return semester.endDate > 0 and semester.endDate < now_timestamp
+
+
+def _refresh_curriculum_semesters(
+    semesters: list[Semester],
+    *,
+    cached_semester_ids: set[str],
+    now_timestamp: int,
+) -> list[Semester]:
+    return [
+        semester
+        for semester in semesters
+        if not _semester_has_ended(semester, now_timestamp)
+        or str(semester.id) not in cached_semester_ids
+    ]
+
+
+def _cached_complete_semester_ids(
+    store: SQLiteModelStore, semesters: list[Semester]
+) -> set[str]:
+    return {
+        str(semester.id)
+        for semester in semesters
+        if _has_cached_catalog_lessons(store, str(semester.id))
+        and _has_cached_jw_schedule(store, str(semester.id))
+        and (
+            not _should_fetch_catalog_exams(str(semester.id))
+            or _has_cached_catalog_exams(store, str(semester.id))
+        )
+    }
+
+
+def _has_cached_catalog_lessons(store: SQLiteModelStore, semester_id: str) -> bool:
+    return _has_cached_source_semester(
+        store,
+        source="catalog_teach_lesson_list_for_teach",
+        semester_id=semester_id,
+    )
+
+
+def _has_cached_catalog_exams(store: SQLiteModelStore, semester_id: str) -> bool:
+    return _has_cached_source_semester(
+        store,
+        source="catalog_teach_exam_list",
+        semester_id=semester_id,
+    )
+
+
+def _has_cached_jw_schedule(store: SQLiteModelStore, semester_id: str) -> bool:
+    return (
+        store.conn.execute(
+            """
+            SELECT 1 FROM upstream_fetches
+            WHERE source = ?
+              AND ok = 1
+              AND (context = ? OR context LIKE ?)
+            LIMIT 1
+            """,
+            (
+                "jw_ws_schedule_table_datum",
+                f"semester_id={semester_id}",
+                f"%&semester_id={semester_id}",
+            ),
+        ).fetchone()
+        is not None
+    )
+
+
+def _has_cached_source_semester(
+    store: SQLiteModelStore, *, source: str, semester_id: str
+) -> bool:
+    return (
+        store.conn.execute(
+            """
+            SELECT 1 FROM upstream_fetches
+            WHERE source = ?
+              AND ok = 1
+              AND context = ?
+            LIMIT 1
+            """,
+            (source, f"semester_id={semester_id}"),
+        ).fetchone()
+        is not None
+    )
+
+
+def _delete_source_fetches(store: SQLiteModelStore, source: str) -> None:
+    fetch_ids = [
+        row[0]
+        for row in store.conn.execute(
+            "SELECT id FROM upstream_fetches WHERE source = ?",
+            (source,),
+        )
+    ]
+    store.delete_fetches(fetch_ids)
+
+
+def _delete_cached_semester(
+    store: SQLiteModelStore, guesses: SQLiteGuessStore, semester_id: str
+) -> None:
+    fetch_ids = [
+        row[0]
+        for row in store.conn.execute(
+            """
+            SELECT id FROM upstream_fetches
+            WHERE (
+                source IN (
+                    'catalog_teach_lesson_list_for_teach',
+                    'catalog_teach_exam_list'
+                )
+                AND context = ?
+            )
+            OR (
+                source = 'jw_ws_schedule_table_datum'
+                AND (context = ? OR context LIKE ?)
+            )
+            """,
+            (
+                f"semester_id={semester_id}",
+                f"semester_id={semester_id}",
+                f"%&semester_id={semester_id}",
+            ),
+        )
+    ]
+    store.delete_fetches(fetch_ids)
+    guesses.delete_semester(semester_id)
 
 
 def _is_skippable_exam_fetch_error(error: Exception) -> bool:
@@ -291,15 +421,41 @@ async def _store_semester(
 
 async def make_curriculum() -> None:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    store = SQLiteModelStore(BUILD_DIR / SNAPSHOT_FILENAME)
-    guesses = SQLiteGuessStore(BUILD_DIR / GUESSES_FILENAME)
+    snapshot_path = BUILD_DIR / SNAPSHOT_FILENAME
+    guesses_path = BUILD_DIR / GUESSES_FILENAME
+    reuse_snapshot = snapshot_path.exists()
+    reuse_guesses = guesses_path.exists()
+    store = SQLiteModelStore(snapshot_path, reset=not reuse_snapshot)
+    guesses = SQLiteGuessStore(guesses_path, reset=not reuse_guesses)
 
     try:
         _register_upstream_tables(store)
         async with USTCSession() as session:
+            _delete_source_fetches(store, "catalog_teach_semester_list")
             semesters = await _store_catalog_semesters(session=session, store=store)
+            _delete_source_fetches(store, "catalog_teach_department_college_tree")
             await _store_catalog_departments(session=session, store=store)
             selected_semesters = _selected_curriculum_semesters(semesters)
+            reuse_curriculum_cache = reuse_snapshot and reuse_guesses
+            cached_semester_ids = (
+                _cached_complete_semester_ids(store, selected_semesters)
+                if reuse_curriculum_cache
+                else set()
+            )
+            now_timestamp = int(time.time())
+            refreshed_semesters = _refresh_curriculum_semesters(
+                selected_semesters,
+                cached_semester_ids=cached_semester_ids,
+                now_timestamp=now_timestamp,
+            )
+            refreshed_semester_ids = {
+                str(semester.id) for semester in refreshed_semesters
+            }
+            cached_ended_semester_ids = [
+                str(semester.id)
+                for semester in sorted(selected_semesters, key=_semester_sort_key)
+                if str(semester.id) not in refreshed_semester_ids
+            ]
             skipped_catalog_lesson_semester_ids = [
                 str(semester.id)
                 for semester in sorted(semesters, key=_semester_sort_key)
@@ -312,9 +468,19 @@ async def make_curriculum() -> None:
             ]
             store.put_metadata(
                 {
-                    "curriculum_mode": "all",
+                    "curriculum_mode": "incremental"
+                    if reuse_curriculum_cache
+                    else "all",
+                    "curriculum_cache_source": "previous_artifact"
+                    if reuse_curriculum_cache
+                    else "none",
                     "discovered_semester_count": len(semesters),
                     "selected_semester_count": len(selected_semesters),
+                    "refreshed_semester_count": len(refreshed_semesters),
+                    "cached_ended_semester_count": len(cached_ended_semester_ids),
+                    "cached_ended_semester_ids": ",".join(
+                        cached_ended_semester_ids
+                    ),
                     "catalog_lesson_min_semester_id": MIN_CATALOG_LESSON_SEMESTER_ID,
                     "catalog_lesson_skipped_legacy_semester_count": len(
                         skipped_catalog_lesson_semester_ids
@@ -346,17 +512,20 @@ async def make_curriculum() -> None:
             )
 
             logger.info(
-                "Discovered %s semester(s); refreshing %s selected semester(s)",
+                "Discovered %s semester(s); refreshing %s selected semester(s); "
+                "using cached data for %s ended semester(s)",
                 len(semesters),
-                len(selected_semesters),
+                len(refreshed_semesters),
+                len(cached_ended_semester_ids),
             )
 
             for semester in tqdm(
-                selected_semesters,
+                refreshed_semesters,
                 position=1,
                 leave=True,
                 desc="Processing semesters",
             ):
+                _delete_cached_semester(store, guesses, str(semester.id))
                 await _store_semester(
                     session=session,
                     store=store,
