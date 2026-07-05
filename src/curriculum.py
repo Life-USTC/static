@@ -37,6 +37,7 @@ CATALOG_DEPARTMENT_URL = "https://catalog.ustc.edu.cn/api/teach/department/colle
 CATALOG_LESSON_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach"
 CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
 JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
+MIN_CATALOG_LESSON_SEMESTER_ID = 62
 MIN_JW_SCHEDULE_SEMESTER_ID = 100
 MIN_CATALOG_EXAM_SEMESTER_ID = 381
 
@@ -45,18 +46,38 @@ def _course_chunks(courses: list[Course], chunk_size: int = 100) -> list[list[Co
     return [courses[i : i + chunk_size] for i in range(0, len(courses), chunk_size)]
 
 
-def _should_fetch_jw_schedule_table(semester_id: str) -> bool:
+def _is_semester_at_or_after(semester_id: str, minimum_semester_id: int) -> bool:
     try:
-        return int(semester_id) >= MIN_JW_SCHEDULE_SEMESTER_ID
+        return int(semester_id) >= minimum_semester_id
     except ValueError:
         return True
+
+
+def _should_fetch_catalog_lessons(semester_id: str) -> bool:
+    return _is_semester_at_or_after(semester_id, MIN_CATALOG_LESSON_SEMESTER_ID)
+
+
+def _should_fetch_jw_schedule_table(semester_id: str) -> bool:
+    return _is_semester_at_or_after(semester_id, MIN_JW_SCHEDULE_SEMESTER_ID)
 
 
 def _should_fetch_catalog_exams(semester_id: str) -> bool:
+    return _is_semester_at_or_after(semester_id, MIN_CATALOG_EXAM_SEMESTER_ID)
+
+
+def _semester_sort_key(semester: Semester) -> int:
     try:
-        return int(semester_id) >= MIN_CATALOG_EXAM_SEMESTER_ID
+        return int(semester.id)
     except ValueError:
-        return True
+        return 0
+
+
+def _selected_curriculum_semesters(semesters: list[Semester]) -> list[Semester]:
+    return [
+        semester
+        for semester in semesters
+        if _should_fetch_catalog_lessons(str(semester.id))
+    ]
 
 
 def _is_skippable_exam_fetch_error(error: Error) -> bool:
@@ -293,28 +314,42 @@ async def make_curriculum() -> None:
         async with USTCSession() as session:
             semesters = await _store_catalog_semesters(session=session, store=store)
             await _store_catalog_departments(session=session, store=store)
+            selected_semesters = _selected_curriculum_semesters(semesters)
+            skipped_catalog_lesson_semester_ids = [
+                str(semester.id)
+                for semester in sorted(semesters, key=_semester_sort_key)
+                if not _should_fetch_catalog_lessons(str(semester.id))
+            ]
             skipped_catalog_exam_semester_ids = [
                 str(semester.id)
-                for semester in sorted(semesters, key=lambda item: item.id)
+                for semester in sorted(selected_semesters, key=_semester_sort_key)
                 if not _should_fetch_catalog_exams(str(semester.id))
             ]
             store.put_metadata(
                 {
                     "curriculum_mode": "all",
-                    "selected_semester_count": len(semesters),
+                    "discovered_semester_count": len(semesters),
+                    "selected_semester_count": len(selected_semesters),
+                    "catalog_lesson_min_semester_id": MIN_CATALOG_LESSON_SEMESTER_ID,
+                    "catalog_lesson_skipped_legacy_semester_count": len(
+                        skipped_catalog_lesson_semester_ids
+                    ),
+                    "catalog_lesson_skipped_legacy_semester_ids": ",".join(
+                        skipped_catalog_lesson_semester_ids
+                    ),
                     "jw_schedule_min_semester_id": MIN_JW_SCHEDULE_SEMESTER_ID,
                     "jw_schedule_selected_semester_count": sum(
                         _should_fetch_jw_schedule_table(str(semester.id))
-                        for semester in semesters
+                        for semester in selected_semesters
                     ),
                     "jw_schedule_skipped_legacy_semester_count": sum(
                         not _should_fetch_jw_schedule_table(str(semester.id))
-                        for semester in semesters
+                        for semester in selected_semesters
                     ),
                     "catalog_exam_min_semester_id": MIN_CATALOG_EXAM_SEMESTER_ID,
                     "catalog_exam_selected_semester_count": sum(
                         _should_fetch_catalog_exams(str(semester.id))
-                        for semester in semesters
+                        for semester in selected_semesters
                     ),
                     "catalog_exam_skipped_legacy_semester_count": len(
                         skipped_catalog_exam_semester_ids
@@ -326,12 +361,13 @@ async def make_curriculum() -> None:
             )
 
             logger.info(
-                "Discovered %s semester(s); refreshing complete SQLite snapshot",
+                "Discovered %s semester(s); refreshing %s selected semester(s)",
                 len(semesters),
+                len(selected_semesters),
             )
 
             for semester in tqdm(
-                semesters,
+                selected_semesters,
                 position=1,
                 leave=True,
                 desc="Processing semesters",
