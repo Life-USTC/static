@@ -1,13 +1,21 @@
 import unittest
+from json import JSONDecodeError
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.curriculum import (
     _cached_complete_semester_ids,
+    _has_cached_jw_schedule,
+    _jw_schedule_expected_chunk_count_key,
     _refresh_curriculum_semesters,
     _selected_curriculum_semesters,
     _semester_has_ended,
     _should_fetch_catalog_exams,
     _should_fetch_catalog_lessons,
     _should_fetch_jw_schedule_table,
+    _store_jw_schedule_chunks,
+)
+from src.models.api.catalog_api_teach_lesson_list_for_teach import (
+    TeachLessonListResponse,
 )
 from src.models.semester import Semester
 from src.sqlite_store import SQLiteModelStore
@@ -55,6 +63,109 @@ class JwScheduleFetchTest(unittest.TestCase):
 
     def test_fetches_schedule_for_non_numeric_semester_ids(self) -> None:
         self.assertTrue(_should_fetch_jw_schedule_table("latest"))
+
+
+class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
+    async def test_records_expected_count_and_accepts_all_successful_chunks(
+        self,
+    ) -> None:
+        store = SQLiteModelStore(":memory:")
+        guesses = MagicMock()
+        try:
+            catalog_fetch_id = store.record_fetch(
+                source="catalog_teach_lesson_list_for_teach",
+                method="GET",
+                url="lesson/401",
+                context={"semester_id": "401"},
+            )
+            store.conn.execute(
+                "CREATE TABLE catalog_teach_lesson_list_for_teach("
+                "store_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "fetch_id INTEGER NOT NULL)"
+            )
+            store.conn.executemany(
+                "INSERT INTO catalog_teach_lesson_list_for_teach(fetch_id) VALUES(?)",
+                [(catalog_fetch_id,)] * 101,
+            )
+            with patch(
+                "src.curriculum.fetch_jw_schedule_table_json",
+                new_callable=AsyncMock,
+                return_value={"result": None},
+            ):
+                await _store_jw_schedule_chunks(
+                    session=MagicMock(),
+                    store=store,
+                    guesses=guesses,
+                    semester_id="401",
+                    catalog_response=TeachLessonListResponse(root=[]),
+                    courses=[MagicMock() for _ in range(101)],
+                )
+
+            metadata_key = _jw_schedule_expected_chunk_count_key("401")
+            expected_count = store.conn.execute(
+                "SELECT value FROM metadata WHERE key = ?",
+                (metadata_key,),
+            ).fetchone()
+            chunk_size = store.conn.execute(
+                "SELECT value FROM metadata WHERE key = 'jw_schedule_chunk_size'"
+            ).fetchone()
+            complete = _has_cached_jw_schedule(store, "401")
+            store.conn.execute("DELETE FROM metadata WHERE key = ?", (metadata_key,))
+            legacy_complete = _has_cached_jw_schedule(store, "401")
+        finally:
+            store.close()
+
+        self.assertEqual(expected_count, ("2",))
+        self.assertEqual(chunk_size, ("100",))
+        self.assertTrue(complete)
+        self.assertTrue(legacy_complete)
+
+    async def test_missing_chunk_is_not_complete(self) -> None:
+        store = SQLiteModelStore(":memory:")
+        try:
+            store.put_metadata({_jw_schedule_expected_chunk_count_key("401"): 2})
+            store.record_fetch(
+                source="jw_ws_schedule_table_datum",
+                method="POST",
+                url="jw",
+                context={"semester_id": "401", "chunk_index": 0},
+            )
+
+            complete = _has_cached_jw_schedule(store, "401")
+        finally:
+            store.close()
+
+        self.assertFalse(complete)
+
+    async def test_failed_chunk_aborts_refresh_and_is_not_complete(self) -> None:
+        store = SQLiteModelStore(":memory:")
+        guesses = MagicMock()
+        try:
+            with (
+                patch(
+                    "src.curriculum.fetch_jw_schedule_table_json",
+                    new_callable=AsyncMock,
+                    side_effect=[
+                        {"result": None},
+                        JSONDecodeError("non-json", "<html>", 0),
+                    ],
+                ),
+                self.assertRaises(JSONDecodeError),
+            ):
+                await _store_jw_schedule_chunks(
+                    session=MagicMock(),
+                    store=store,
+                    guesses=guesses,
+                    semester_id="401",
+                    catalog_response=TeachLessonListResponse(root=[]),
+                    courses=[MagicMock() for _ in range(101)],
+                )
+
+            complete = _has_cached_jw_schedule(store, "401")
+        finally:
+            store.close()
+
+        self.assertFalse(complete)
 
 
 class CatalogExamFetchTest(unittest.TestCase):
@@ -153,6 +264,10 @@ class SemesterCacheTest(unittest.TestCase):
                 ok=False,
                 error="non-json",
             )
+            for semester_id in ("221", "381", "401", "421"):
+                store.put_metadata(
+                    {_jw_schedule_expected_chunk_count_key(semester_id): 1}
+                )
 
             cached = _cached_complete_semester_ids(
                 store,

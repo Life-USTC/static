@@ -39,9 +39,13 @@ CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
 JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
 MIN_CATALOG_LESSON_SEMESTER_ID = 221
 MIN_CATALOG_EXAM_SEMESTER_ID = 381
+JW_SCHEDULE_CHUNK_SIZE = 100
+JW_SCHEDULE_EXPECTED_CHUNK_COUNT_KEY_PREFIX = "jw_schedule_expected_chunk_count_"
 
 
-def _course_chunks(courses: list[Course], chunk_size: int = 100) -> list[list[Course]]:
+def _course_chunks(
+    courses: list[Course], chunk_size: int = JW_SCHEDULE_CHUNK_SIZE
+) -> list[list[Course]]:
     return [courses[i : i + chunk_size] for i in range(0, len(courses), chunk_size)]
 
 
@@ -128,24 +132,109 @@ def _has_cached_catalog_exams(store: SQLiteModelStore, semester_id: str) -> bool
     )
 
 
-def _has_cached_jw_schedule(store: SQLiteModelStore, semester_id: str) -> bool:
+def _jw_schedule_expected_chunk_count_key(semester_id: str) -> str:
+    return f"{JW_SCHEDULE_EXPECTED_CHUNK_COUNT_KEY_PREFIX}{semester_id}"
+
+
+def _catalog_lesson_chunk_count(
+    store: SQLiteModelStore, semester_id: str
+) -> int | None:
+    table_exists = store.conn.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'catalog_teach_lesson_list_for_teach'
+        """
+    ).fetchone()
+    if table_exists is None:
+        return None
+
+    fetch = store.conn.execute(
+        """
+        SELECT id FROM upstream_fetches
+        WHERE source = 'catalog_teach_lesson_list_for_teach'
+          AND ok = 1
+          AND context = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (f"semester_id={semester_id}",),
+    ).fetchone()
+    if fetch is None:
+        return None
+
+    lesson_count = store.conn.execute(
+        """
+        SELECT COUNT(*) FROM catalog_teach_lesson_list_for_teach
+        WHERE fetch_id = ?
+        """,
+        (fetch[0],),
+    ).fetchone()[0]
     return (
-        store.conn.execute(
-            """
-            SELECT 1 FROM upstream_fetches
-            WHERE source = ?
-              AND ok = 1
-              AND (context = ? OR context LIKE ?)
-            LIMIT 1
-            """,
-            (
-                "jw_ws_schedule_table_datum",
-                f"semester_id={semester_id}",
-                f"%&semester_id={semester_id}",
-            ),
-        ).fetchone()
-        is not None
+        int(lesson_count) + JW_SCHEDULE_CHUNK_SIZE - 1
+    ) // JW_SCHEDULE_CHUNK_SIZE
+
+
+def _expected_jw_schedule_chunk_count(
+    store: SQLiteModelStore, semester_id: str
+) -> int | None:
+    row = store.conn.execute(
+        "SELECT value FROM metadata WHERE key = ?",
+        (_jw_schedule_expected_chunk_count_key(semester_id),),
+    ).fetchone()
+    recorded_count = None
+    if row is not None:
+        try:
+            recorded_count = int(row[0])
+        except ValueError:
+            return None
+        if recorded_count < 0:
+            return None
+
+    catalog_count = _catalog_lesson_chunk_count(store, semester_id)
+    if catalog_count is None:
+        return recorded_count
+    if recorded_count is not None and recorded_count != catalog_count:
+        return None
+    return catalog_count
+
+
+def _fetch_context_values(context: str | None) -> dict[str, str]:
+    return {
+        key: value
+        for item in (context or "").split("&")
+        if "=" in item
+        for key, value in [item.split("=", 1)]
+    }
+
+
+def _has_cached_jw_schedule(store: SQLiteModelStore, semester_id: str) -> bool:
+    expected_count = _expected_jw_schedule_chunk_count(store, semester_id)
+    if expected_count is None:
+        return False
+
+    successful_chunks: set[int] = set()
+    fetches = store.conn.execute(
+        """
+        SELECT ok, context FROM upstream_fetches
+        WHERE source = 'jw_ws_schedule_table_datum'
+        """
     )
+    for ok, context in fetches:
+        values = _fetch_context_values(context)
+        if values.get("semester_id") != semester_id:
+            continue
+        if not ok:
+            return False
+        try:
+            chunk_index = int(values["chunk_index"])
+        except (KeyError, ValueError):
+            return False
+        if chunk_index in successful_chunks:
+            return False
+        successful_chunks.add(chunk_index)
+
+    return successful_chunks == set(range(expected_count))
 
 
 def _has_cached_source_semester(
@@ -330,13 +419,12 @@ async def _store_jw_schedule_chunks(
     courses: list[Course],
 ) -> None:
     chunks = _course_chunks(courses)
-    if not chunks:
-        guesses.add_teacher_section_guesses(
-            semester_id=semester_id,
-            catalog_lessons=catalog_response,
-            jw_schedules=None,
-        )
-        return
+    store.put_metadata(
+        {
+            "jw_schedule_chunk_size": JW_SCHEDULE_CHUNK_SIZE,
+            _jw_schedule_expected_chunk_count_key(semester_id): len(chunks),
+        }
+    )
 
     schedule_responses: list[JwWsScheduleTableDatumResponse] = []
     for chunk_index, chunk in enumerate(chunks):
@@ -354,13 +442,13 @@ async def _store_jw_schedule_chunks(
                 ok=False,
                 error=str(e),
             )
-            logger.info(
-                "Skipping remaining JW schedule table chunks for semester %s after "
-                "non-JSON response at chunk %s",
+            logger.error(
+                "Aborting JW schedule table fetch for semester %s after non-JSON "
+                "response at chunk %s",
                 semester_id,
                 chunk_index,
             )
-            break
+            raise
 
         response = JwWsScheduleTableDatumResponse.model_validate(payload)
         schedule_responses.append(response)
@@ -377,6 +465,10 @@ async def _store_jw_schedule_chunks(
             context={"semester_id": semester_id, "chunk_index": chunk_index},
         )
 
+    if not _has_cached_jw_schedule(store, semester_id):
+        raise RuntimeError(
+            f"Incomplete JW schedule table chunks for semester {semester_id}"
+        )
     guesses.add_teacher_section_guesses(
         semester_id=semester_id,
         catalog_lessons=catalog_response,
