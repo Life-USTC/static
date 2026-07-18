@@ -139,11 +139,7 @@ class YoungEventFetchTest(unittest.IsolatedAsyncioTestCase):
                 self.urls.append(url)
                 params = parse_qs(urlsplit(url).query)
                 page_no = int(params["pageNo"][0])
-                records = (
-                    [{"id": "1"}, {"id": "2"}]
-                    if page_no == 1
-                    else [{"id": "3"}]
-                )
+                records = [{"id": "1"}, {"id": "2"}] if page_no == 1 else [{"id": "3"}]
                 return {
                     "success": True,
                     "result": {
@@ -168,10 +164,7 @@ class YoungEventFetchTest(unittest.IsolatedAsyncioTestCase):
             ["1", "2", "3"],
         )
         self.assertEqual(
-            [
-                parse_qs(urlsplit(url).query)["pageNo"][0]
-                for url in session.urls
-            ],
+            [parse_qs(urlsplit(url).query)["pageNo"][0] for url in session.urls],
             ["1", "2"],
         )
 

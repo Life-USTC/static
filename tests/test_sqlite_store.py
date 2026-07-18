@@ -10,7 +10,9 @@ class SQLiteModelStoreCacheTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "snapshot.sqlite"
             store = SQLiteModelStore(path)
-            store.record_fetch(source="source", method="GET", url="https://example.test")
+            store.record_fetch(
+                source="source", method="GET", url="https://example.test"
+            )
             store.close()
 
             reopened = SQLiteModelStore(path, reset=False)

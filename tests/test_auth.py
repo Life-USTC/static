@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 import httpx
 
-from src.utils.auth import RequestSession, USTCSession, _create_request_http_client
+from src.utils.auth import (
+    LoginConfig,
+    RequestSession,
+    USTCSession,
+    _create_request_http_client,
+)
 
 
 class RequestSessionTest(unittest.IsolatedAsyncioTestCase):
@@ -77,8 +82,39 @@ class RequestSessionTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.aclose()
 
+    async def test_post_json_honors_per_request_transient_retries(self) -> None:
+        attempts = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(503, request=request)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            session = RequestSession(client=client, page=None)
+            with (
+                patch.object(session, "_request_retry_wait_ms", return_value=0),
+                self.assertRaises(httpx.HTTPStatusError),
+            ):
+                await session.post_json(
+                    "https://jw.ustc.edu.cn/ws/schedule-table/datum",
+                    data={"lessonIds": ["1"]},
+                    transient_retries=2,
+                )
+        finally:
+            await client.aclose()
+
+        self.assertEqual(attempts, 3)
+
 
 class USTCSessionConfigTest(unittest.TestCase):
+    def test_login_timeout_defaults_to_one_minute(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = LoginConfig.from_env()
+
+        self.assertEqual(config.timeout_ms, 60_000)
+
     def test_after_login_services_default_to_enabled(self) -> None:
         with patch.dict(
             os.environ,

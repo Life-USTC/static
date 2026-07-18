@@ -2,6 +2,7 @@ import logging
 import time
 from json import JSONDecodeError
 
+import httpx
 from tqdm import tqdm
 
 from .guesses import SQLiteGuessStore
@@ -34,7 +35,9 @@ logger = logging.getLogger(__name__)
 
 CATALOG_SEMESTER_URL = "https://catalog.ustc.edu.cn/api/teach/semester/list"
 CATALOG_DEPARTMENT_URL = "https://catalog.ustc.edu.cn/api/teach/department/college-tree"
-CATALOG_LESSON_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach"
+CATALOG_LESSON_URL_PREFIX = (
+    "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach"
+)
 CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
 JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
 MIN_CATALOG_LESSON_SEMESTER_ID = 221
@@ -170,9 +173,7 @@ def _catalog_lesson_chunk_count(
         """,
         (fetch[0],),
     ).fetchone()[0]
-    return (
-        int(lesson_count) + JW_SCHEDULE_CHUNK_SIZE - 1
-    ) // JW_SCHEDULE_CHUNK_SIZE
+    return (int(lesson_count) + JW_SCHEDULE_CHUNK_SIZE - 1) // JW_SCHEDULE_CHUNK_SIZE
 
 
 def _expected_jw_schedule_chunk_count(
@@ -298,6 +299,9 @@ def _delete_cached_semester(
 
 
 def _is_skippable_exam_fetch_error(error: Exception) -> bool:
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code in {502, 504}
+
     message = str(error).lower()
     return any(
         marker in message
@@ -570,9 +574,7 @@ async def make_curriculum() -> None:
                     "selected_semester_count": len(selected_semesters),
                     "refreshed_semester_count": len(refreshed_semesters),
                     "cached_ended_semester_count": len(cached_ended_semester_ids),
-                    "cached_ended_semester_ids": ",".join(
-                        cached_ended_semester_ids
-                    ),
+                    "cached_ended_semester_ids": ",".join(cached_ended_semester_ids),
                     "catalog_lesson_min_semester_id": MIN_CATALOG_LESSON_SEMESTER_ID,
                     "catalog_lesson_skipped_legacy_semester_count": len(
                         skipped_catalog_lesson_semester_ids
