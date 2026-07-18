@@ -242,7 +242,7 @@ class SQLiteModelStore:
         response: BaseModel,
         fetch_id: int,
         context: Mapping[str, Scalar | None] | None = None,
-        ) -> int:
+    ) -> int:
         context = context or {}
 
         if isinstance(response, RootModel):
@@ -261,9 +261,7 @@ class SQLiteModelStore:
                         count += 1
                 return count
             if isinstance(root, BaseModel):
-                self._insert_model(
-                    table_name, root, fetch_id=fetch_id, context=context
-                )
+                self._insert_model(table_name, root, fetch_id=fetch_id, context=context)
                 return 1
             return 0
 

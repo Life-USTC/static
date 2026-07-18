@@ -46,7 +46,7 @@ class LoginConfig:
 
     @classmethod
     def from_env(cls) -> "LoginConfig":
-        timeout_ms = int(os.getenv("USTC_TIMEOUT_MS", "0"))
+        timeout_ms = int(os.getenv("USTC_TIMEOUT_MS", "60000"))
         attempts = max(int(os.getenv("USTC_LOGIN_ATTEMPTS", "3")), 1)
         state_max_turns = max(int(os.getenv("USTC_LOGIN_STATE_MAX_TURNS", "10")), 1)
         turn_wait_ms = max(int(os.getenv("USTC_LOGIN_TURN_WAIT_MS", "5000")), 0)
@@ -172,14 +172,12 @@ class RequestSession:
         page: Page | None,
         timeout_ms: int = 10 * 60 * 1000,
         fail_on_status_code: bool = True,
-        max_retries: int = 100,
         transient_retries: int = 3,
     ):
         self.client = client
         self.page = page
         self.timeout_ms = timeout_ms
         self.fail_on_status_code = fail_on_status_code
-        self.max_retries = max_retries
         self.transient_retries = transient_retries
         self.logger = logging.getLogger(__name__)
 

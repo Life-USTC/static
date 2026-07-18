@@ -19,6 +19,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -35,32 +36,35 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          run_id="$(gh run list \
+          mapfile -t run_ids < <(gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --workflow build.yml \
             --branch master \
             --status success \
-            --limit 1 \
+            --limit 7 \
             --json databaseId \
-            --jq '.[0].databaseId // empty')"
-          if [ -z "$run_id" ]; then
+            --jq '.[].databaseId')
+          if [ "${#run_ids[@]}" -eq 0 ]; then
             echo "No previous successful build artifact found"
             exit 0
           fi
 
-          mkdir -p /tmp/previous-pages build
-          if ! gh run download "$run_id" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name github-pages \
-            --dir /tmp/previous-pages; then
-            echo "Previous build artifact $run_id is unavailable"
-            exit 0
-          fi
-
-          if [ -f /tmp/previous-pages/artifact.tar ]; then
-            tar -xf /tmp/previous-pages/artifact.tar -C build
-            echo "Restored previous build artifact $run_id"
-          fi
+          mkdir -p build
+          for run_id in "${run_ids[@]}"; do
+            rm -rf /tmp/previous-pages
+            mkdir -p /tmp/previous-pages
+            if gh run download "$run_id" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name github-pages \
+              --dir /tmp/previous-pages &&
+              test -f /tmp/previous-pages/artifact.tar; then
+              tar -xf /tmp/previous-pages/artifact.tar -C build
+              echo "Restored previous build artifact $run_id"
+              exit 0
+            fi
+            echo "::warning title=Previous build cache unavailable::Artifact from run $run_id could not be restored"
+          done
+          echo "::warning title=Incremental cache unavailable::No recent successful Pages artifact could be restored; running a full rebuild"
       - name: Run Program
         env:
           TZ: "Asia/Shanghai"
@@ -71,10 +75,24 @@ jobs:
           uv run --no-dev python main.py
       - name: Verify SQLite snapshots and schemas
         run: |
-          test -f build/life-ustc-static.sqlite
-          test -f build/life-ustc-static-guesses.sqlite
+          test -s build/build-status.json
           test -d build/schemas/upstream
           test "$(find build/schemas/upstream -name '*.schema.json' | wc -l)" -ge 5
+          uv run --no-dev python - <<'PY'
+          import json
+          from pathlib import Path
+
+          build = Path("build")
+          builders = json.loads((build / "build-status.json").read_text())["builders"]
+          if builders["curriculum"]["status"] == "ok":
+              assert (build / "life-ustc-static.sqlite").is_file()
+              assert (build / "life-ustc-static-guesses.sqlite").is_file()
+          if builders["young"]["status"] == "ok":
+              assert (build / "life-ustc-static.sqlite").is_file()
+          if builders["rss"]["status"] == "ok":
+              feeds = list((build / "rss").glob("*.xml"))
+              assert feeds and all(feed.stat().st_size > 0 for feed in feeds)
+          PY
       - name: Prepare Pages artifact
         run: touch build/.nojekyll
       - name: Upload static files as artifact
@@ -82,6 +100,7 @@ jobs:
         uses: actions/upload-pages-artifact@v4
         with:
           path: build/
+          retention-days: 7
 
   deploy:
     if: github.ref == 'refs/heads/master'

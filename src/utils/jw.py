@@ -13,9 +13,7 @@ from .auth import RequestSession
 from .tools import compose_start_end, join_nonempty
 
 _jw_user_id_cache: dict[int, str] = {}
-JW_SSO_URL = (
-    "https://jw.ustc.edu.cn/ucas-sso/login"
-)
+JW_SSO_URL = "https://jw.ustc.edu.cn/ucas-sso/login"
 
 indexStartTimes: dict[int, int] = {
     1: 7 * 60 + 50,
@@ -301,7 +299,7 @@ async def fetch_jw_schedule_table_json(
         url=url,
         data={"lessonIds": course_id_list},
         timeout=30_000,
-        max_retries=2,
+        transient_retries=2,
     )
 
 

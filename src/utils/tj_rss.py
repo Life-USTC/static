@@ -74,7 +74,8 @@ def tj_ustc_RSS(output_dir: Path | str):
 
     s = requests.Session()
     s.mount("http://", HTTPAdapter(max_retries=3))
-    r = s.get(url, headers=headers)
+    r = s.get(url, headers=headers, timeout=60)
+    r.raise_for_status()
     r.encoding = "utf-8"
     html = r.text
 

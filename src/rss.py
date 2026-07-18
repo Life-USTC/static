@@ -6,6 +6,7 @@ from typing import cast
 import feedgenerator
 import feedparser
 import html2text
+import httpx
 import yaml
 from tqdm import tqdm
 
@@ -16,9 +17,26 @@ logger = logging.getLogger(__name__)
 
 
 async def get_and_clean_feed(url: str, path_to_save: Path):
-    feed = feedparser.parse(url)
+    try:
+        response = httpx.get(url, timeout=60, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.HTTPError as error:
+        logger.warning(
+            "Keeping cached %s after feed fetch failed: %s", path_to_save, error
+        )
+        return
+
+    feed = feedparser.parse(response.content)
+
+    if feed.bozo:
+        logger.warning("Feed %s reported a parse warning: %s", url, feed.bozo_exception)
 
     if not feed.entries:
+        logger.warning(
+            "Keeping cached %s because the fetched feed has no entries%s",
+            path_to_save,
+            f": {feed.bozo_exception}" if feed.bozo else "",
+        )
         return
 
     feed_title = getattr(feed.feed, "title", "RSS Feed")
@@ -33,6 +51,7 @@ async def get_and_clean_feed(url: str, path_to_save: Path):
     handler.ignore_links = True
     handler.ignore_images = True
 
+    written_items = 0
     for entry in tqdm(
         feed.entries,
         position=0,
@@ -54,10 +73,18 @@ async def get_and_clean_feed(url: str, path_to_save: Path):
                 description=description,
                 pubdate=date,
             )
+            written_items += 1
         except Exception as e:
             logger.exception("Failed to process feed entry: %s", e)
 
-    with open(path_to_save, "w") as f:
+    if written_items == 0:
+        logger.warning(
+            "Keeping cached %s because no fetched entries could be parsed",
+            path_to_save,
+        )
+        return
+
+    with open(path_to_save, "w", encoding="utf-8") as f:
         new_feed.write(f, "utf-8")
 
 

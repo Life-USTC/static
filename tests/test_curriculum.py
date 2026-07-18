@@ -2,9 +2,12 @@ import unittest
 from json import JSONDecodeError
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+
 from src.curriculum import (
     _cached_complete_semester_ids,
     _has_cached_jw_schedule,
+    _is_skippable_exam_fetch_error,
     _jw_schedule_expected_chunk_count_key,
     _refresh_curriculum_semesters,
     _selected_curriculum_semesters,
@@ -169,6 +172,32 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CatalogExamFetchTest(unittest.TestCase):
+    def test_skips_structured_bad_gateway_errors(self) -> None:
+        request = httpx.Request(
+            "GET", "https://catalog.ustc.edu.cn/api/teach/exam/list/401"
+        )
+        for status_code in (502, 504):
+            response = httpx.Response(status_code, request=request)
+            error = httpx.HTTPStatusError(
+                "Bad Gateway",
+                request=request,
+                response=response,
+            )
+            self.assertTrue(_is_skippable_exam_fetch_error(error))
+
+    def test_does_not_skip_other_structured_http_errors(self) -> None:
+        request = httpx.Request(
+            "GET", "https://catalog.ustc.edu.cn/api/teach/exam/list/401"
+        )
+        response = httpx.Response(500, request=request)
+        error = httpx.HTTPStatusError(
+            "Server Error",
+            request=request,
+            response=response,
+        )
+
+        self.assertFalse(_is_skippable_exam_fetch_error(error))
+
     def test_skips_semesters_below_minimum_exam_id(self) -> None:
         self.assertFalse(_should_fetch_catalog_exams("221"))
         self.assertFalse(_should_fetch_catalog_exams("362"))
