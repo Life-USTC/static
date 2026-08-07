@@ -1,24 +1,17 @@
 # Life@USTC Static
 
-## Introduction
+Builds upstream USTC curriculum/bus snapshots and publishes them to GitHub Pages
+from `master` via GitHub Actions. The Life@USTC **server** static loader
+consumes these SQLite artifacts (not a user-facing product surface).
 
-`master` branch holds the code to generate these static files. GitHub Actions publishes the generated output to GitHub Pages directly from the workflow artifact.
+Published artifacts:
 
-GitHub Actions are used to keep the GitHub Pages deployment up-to-date.
+- `https://static.life-ustc.tiankaima.dev/life-ustc-static.sqlite` — typed upstream responses in normalized tables
+- `https://static.life-ustc.tiankaima.dev/life-ustc-static-guesses.sqlite` — inferred relationships
+- `https://static.life-ustc.tiankaima.dev/schemas/upstream/*.schema.json` — JSON Schema per upstream response
 
-Each successful build also publishes a SQLite snapshot at
-`https://static.life-ustc.tiankaima.dev/life-ustc-static.sqlite`. The snapshot
-stores typed upstream curriculum responses in normalized SQLite tables.
-
-The build also publishes:
-
-- `https://static.life-ustc.tiankaima.dev/life-ustc-static-guesses.sqlite` for
-  inferred relationships that are not directly keyed by upstream data.
-- `https://static.life-ustc.tiankaima.dev/schemas/upstream/*.schema.json` for
-  the JSON Schema contract of each upstream response stored in SQLite.
-
-The previous generated curriculum JSON endpoints and upstream response cache
-files are no longer built or published.
+Legacy curriculum JSON endpoints and upstream response cache files are no longer
+built.
 
 ## License & Warranty
 
