@@ -398,37 +398,49 @@ class USTCSession:
 
     async def __aenter__(self) -> RequestSession:
         """Initialize browser, perform login and return RequestSession"""
-        self.playwright = await async_playwright().__aenter__()
-        self.browser = await self.playwright.chromium.launch(headless=self.headless)
-        self.context = await self.browser.new_context(locale="zh-CN")
-        self.page = await self.context.new_page()
+        try:
+            self.playwright = await async_playwright().__aenter__()
+            self.browser = await self.playwright.chromium.launch(headless=self.headless)
+            self.context = await self.browser.new_context(locale="zh-CN")
+            self.page = await self.context.new_page()
 
-        await self._login()
-        if self.after_login_services:
-            await self._after_login()
+            await self._login()
+            if self.after_login_services:
+                await self._after_login()
 
-        client = await self._create_http_client()
-        timeout_ms = self.timeout_ms if self.timeout_ms > 0 else 10 * 60 * 1000
-        self.request_session = RequestSession(
-            client=client,
-            page=self.page,
-            timeout_ms=timeout_ms,
-        )
-        return self.request_session
+            client = await self._create_http_client()
+            timeout_ms = self.timeout_ms if self.timeout_ms > 0 else 10 * 60 * 1000
+            self.request_session = RequestSession(
+                client=client,
+                page=self.page,
+                timeout_ms=timeout_ms,
+            )
+            return self.request_session
+        except BaseException:
+            await self._cleanup()
+            raise
 
     async def __aexit__(self, exc_type, exc, tb):
         """Cleanup browser resources"""
+        await self._cleanup()
+
+    async def _cleanup(self) -> None:
+        """Close every resource that was successfully initialized."""
         with suppress(Exception):
             if self.request_session:
                 await self.request_session.close()
         with suppress(Exception):
-            await self.page.close()
+            if page := getattr(self, "page", None):
+                await page.close()
         with suppress(Exception):
-            await self.context.close()
+            if context := getattr(self, "context", None):
+                await context.close()
         with suppress(Exception):
-            await self.browser.close()
+            if browser := getattr(self, "browser", None):
+                await browser.close()
         with suppress(Exception):
-            await self.playwright.stop()
+            if playwright := getattr(self, "playwright", None):
+                await playwright.stop()
 
     async def _login(self):
         """Perform USTC login sequence"""
