@@ -6,6 +6,7 @@ import httpx
 
 from src.curriculum import (
     _cached_complete_semester_ids,
+    _course_ids_by_code_from_response,
     _has_cached_jw_schedule,
     _is_skippable_exam_fetch_error,
     _jw_schedule_expected_chunk_count_key,
@@ -16,8 +17,11 @@ from src.curriculum import (
     _should_fetch_catalog_lessons,
     _should_fetch_jw_schedule_table,
     _store_jw_schedule_chunks,
+    _stored_course_ids_by_code,
 )
 from src.models.api.catalog_api_teach_lesson_list_for_teach import (
+    Course,
+    TeachLessonListItem,
     TeachLessonListResponse,
 )
 from src.models.semester import Semester
@@ -36,6 +40,149 @@ def _semester(
         startDate=0,
         endDate=end_date,
     )
+
+
+def _catalog_lesson(
+    lesson_id: int,
+    *,
+    course_id: int | None,
+    course_code: str | None,
+    course_cn: str | None = "课程",
+) -> TeachLessonListItem:
+    values = {name: None for name in TeachLessonListItem.model_fields}
+    values["id"] = lesson_id
+    if course_id is not None or course_code is not None:
+        course_values = {name: None for name in Course.model_fields}
+        course_values.update(id=course_id, code=course_code, cn=course_cn)
+        values["course"] = Course(**course_values)
+    return TeachLessonListItem(**values)
+
+
+class CatalogCourseIdentityTest(unittest.TestCase):
+    def test_preserves_distinct_lesson_and_course_ids(self) -> None:
+        response = TeachLessonListResponse(
+            root=[_catalog_lesson(181384, course_id=144481, course_code="MATH1001")]
+        )
+        store = SQLiteModelStore(":memory:")
+        try:
+            store.register_response_model(
+                table_name="catalog_teach_lesson_list_for_teach",
+                response_model=TeachLessonListResponse,
+            )
+            fetch_id = store.record_fetch(source="catalog", method="GET", url="test")
+            store.store_response(
+                table_name="catalog_teach_lesson_list_for_teach",
+                response=response,
+                fetch_id=fetch_id,
+            )
+
+            mapping = _stored_course_ids_by_code(store)
+            stored_ids = store.conn.execute(
+                """
+                SELECT lesson.id, course.id
+                FROM catalog_teach_lesson_list_for_teach AS lesson
+                JOIN catalog_teach_lesson_list_for_teach_course AS course
+                  ON course.parent_store_id = lesson.store_id
+                """
+            ).fetchone()
+        finally:
+            store.close()
+
+        self.assertEqual(mapping, {"MATH1001": 144481})
+        self.assertEqual(stored_ids, (181384, 144481))
+
+    def test_rejects_conflicting_course_id_and_code_mappings(self) -> None:
+        conflicting_code = TeachLessonListResponse(
+            root=[
+                _catalog_lesson(1, course_id=10, course_code="A"),
+                _catalog_lesson(2, course_id=11, course_code="A"),
+            ]
+        )
+        conflicting_id = TeachLessonListResponse(
+            root=[
+                _catalog_lesson(1, course_id=10, course_code="A"),
+                _catalog_lesson(2, course_id=10, course_code="B"),
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "maps to both"):
+            _course_ids_by_code_from_response(conflicting_code)
+        with self.assertRaisesRegex(ValueError, "maps to both"):
+            _course_ids_by_code_from_response(conflicting_id)
+
+    def test_rejects_changed_course_id_from_previous_snapshot(self) -> None:
+        response = TeachLessonListResponse(
+            root=[_catalog_lesson(1, course_id=11, course_code="A")]
+        )
+
+        with self.assertRaisesRegex(ValueError, "changed id from 10 to 11"):
+            _course_ids_by_code_from_response(
+                response, previous_course_ids_by_code={"A": 10}
+            )
+
+    def test_rejects_duplicate_lesson_and_missing_course(self) -> None:
+        duplicate_lesson = TeachLessonListResponse(
+            root=[
+                _catalog_lesson(1, course_id=10, course_code="A"),
+                _catalog_lesson(1, course_id=10, course_code="A"),
+            ]
+        )
+        missing_course = TeachLessonListResponse(
+            root=[_catalog_lesson(1, course_id=None, course_code=None)]
+        )
+
+        with self.assertRaisesRegex(ValueError, "Duplicate catalog lesson"):
+            _course_ids_by_code_from_response(duplicate_lesson)
+        with self.assertRaisesRegex(ValueError, "has no valid course"):
+            _course_ids_by_code_from_response(missing_course)
+
+    def test_rejects_course_without_chinese_name(self) -> None:
+        response = TeachLessonListResponse(
+            root=[
+                _catalog_lesson(
+                    1,
+                    course_id=10,
+                    course_code="A",
+                    course_cn=None,
+                )
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "has no valid course name"):
+            _course_ids_by_code_from_response(response)
+
+    def test_rejects_multiple_stored_courses_for_one_lesson(self) -> None:
+        response = TeachLessonListResponse(
+            root=[_catalog_lesson(1, course_id=10, course_code="A")]
+        )
+        store = SQLiteModelStore(":memory:")
+        try:
+            store.register_response_model(
+                table_name="catalog_teach_lesson_list_for_teach",
+                response_model=TeachLessonListResponse,
+            )
+            fetch_id = store.record_fetch(source="catalog", method="GET", url="test")
+            store.store_response(
+                table_name="catalog_teach_lesson_list_for_teach",
+                response=response,
+                fetch_id=fetch_id,
+            )
+            parent_store_id = store.conn.execute(
+                "SELECT store_id FROM catalog_teach_lesson_list_for_teach"
+            ).fetchone()[0]
+            store.conn.execute(
+                """
+                INSERT INTO catalog_teach_lesson_list_for_teach_course(
+                    fetch_id, parent_store_id, id, code, cn, en
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (fetch_id, parent_store_id, 10, "A", None, None),
+            )
+
+            with self.assertRaisesRegex(ValueError, "has 2 courses"):
+                _stored_course_ids_by_code(store)
+        finally:
+            store.close()
 
 
 class CatalogLessonFetchTest(unittest.TestCase):

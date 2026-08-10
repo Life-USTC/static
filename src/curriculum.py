@@ -44,6 +44,127 @@ MIN_CATALOG_LESSON_SEMESTER_ID = 221
 MIN_CATALOG_EXAM_SEMESTER_ID = 381
 JW_SCHEDULE_CHUNK_SIZE = 100
 JW_SCHEDULE_EXPECTED_CHUNK_COUNT_KEY_PREFIX = "jw_schedule_expected_chunk_count_"
+CATALOG_LESSON_TABLE = "catalog_teach_lesson_list_for_teach"
+CATALOG_COURSE_TABLE = f"{CATALOG_LESSON_TABLE}_course"
+
+
+def _course_ids_by_code_from_response(
+    response: TeachLessonListResponse,
+    *,
+    previous_course_ids_by_code: dict[str, int] | None = None,
+) -> dict[str, int]:
+    lessons = response.root
+    if lessons is None:
+        raise ValueError("Catalog lesson response must be a list")
+
+    lesson_ids: set[int] = set()
+    course_ids_by_code: dict[str, int] = {}
+    course_codes_by_id: dict[int, str] = {}
+    for position, lesson in enumerate(lessons):
+        if lesson.id is None or lesson.id <= 0:
+            raise ValueError(f"Catalog lesson at position {position} has no valid id")
+        if lesson.id in lesson_ids:
+            raise ValueError(f"Duplicate catalog lesson id {lesson.id}")
+        lesson_ids.add(lesson.id)
+
+        course = lesson.course
+        if course is None or course.id is None or course.id <= 0:
+            raise ValueError(f"Catalog lesson {lesson.id} has no valid course")
+        code = (course.code or "").strip()
+        if not code:
+            raise ValueError(f"Catalog lesson {lesson.id} has no valid course code")
+        if not (course.cn or "").strip():
+            raise ValueError(f"Catalog lesson {lesson.id} has no valid course name")
+
+        existing_id = course_ids_by_code.get(code)
+        if existing_id is not None and existing_id != course.id:
+            raise ValueError(
+                f"Catalog course code {code} maps to both {existing_id} and {course.id}"
+            )
+        existing_code = course_codes_by_id.get(course.id)
+        if existing_code is not None and existing_code != code:
+            raise ValueError(
+                f"Catalog course id {course.id} maps to both {existing_code} and {code}"
+            )
+        course_ids_by_code[code] = course.id
+        course_codes_by_id[course.id] = code
+
+    for code, course_id in course_ids_by_code.items():
+        previous_id = (previous_course_ids_by_code or {}).get(code)
+        if previous_id is not None and previous_id != course_id:
+            raise ValueError(
+                f"Catalog course code {code} changed id from "
+                f"{previous_id} to {course_id}"
+            )
+
+    return course_ids_by_code
+
+
+def _stored_course_ids_by_code(store: SQLiteModelStore) -> dict[str, int]:
+    invalid_lesson = store.conn.execute(
+        f"""
+        SELECT lesson.store_id, lesson.id, COUNT(course.store_id)
+        FROM {CATALOG_LESSON_TABLE} AS lesson
+        LEFT JOIN {CATALOG_COURSE_TABLE} AS course
+          ON course.parent_store_id = lesson.store_id
+        GROUP BY lesson.store_id, lesson.id
+        HAVING lesson.id IS NULL OR lesson.id <= 0 OR COUNT(course.store_id) != 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid_lesson is not None:
+        store_id, lesson_id, course_count = invalid_lesson
+        raise ValueError(
+            "Stored catalog lesson "
+            f"{lesson_id!r} (store_id={store_id}) has {course_count} courses"
+        )
+
+    duplicate_lesson = store.conn.execute(
+        f"""
+        SELECT id, COUNT(*)
+        FROM {CATALOG_LESSON_TABLE}
+        GROUP BY id
+        HAVING COUNT(*) != 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if duplicate_lesson is not None:
+        lesson_id, count = duplicate_lesson
+        raise ValueError(f"Stored catalog lesson id {lesson_id} occurs {count} times")
+
+    rows = store.conn.execute(
+        f"""
+        SELECT course.id, course.code, course.cn
+        FROM {CATALOG_LESSON_TABLE} AS lesson
+        JOIN {CATALOG_COURSE_TABLE} AS course
+          ON course.parent_store_id = lesson.store_id
+        """
+    ).fetchall()
+    course_ids_by_code: dict[str, int] = {}
+    course_codes_by_id: dict[int, str] = {}
+    for course_id, raw_code, raw_cn in rows:
+        code = (raw_code or "").strip()
+        valid_name = bool((raw_cn or "").strip())
+        if course_id is None or course_id <= 0 or not code or not valid_name:
+            raise ValueError(
+                f"Stored catalog course has invalid id/code/name: {course_id!r}"
+            )
+        existing_id = course_ids_by_code.get(code)
+        if existing_id is not None and existing_id != course_id:
+            raise ValueError(
+                f"Stored catalog course code {code} maps to both "
+                f"{existing_id} and {course_id}"
+            )
+        existing_code = course_codes_by_id.get(course_id)
+        if existing_code is not None and existing_code != code:
+            raise ValueError(
+                f"Stored catalog course id {course_id} maps to both "
+                f"{existing_code} and {code}"
+            )
+        course_ids_by_code[code] = course_id
+        course_codes_by_id[course_id] = code
+
+    return course_ids_by_code
 
 
 def _course_chunks(
@@ -486,9 +607,15 @@ async def _store_semester(
     store: SQLiteModelStore,
     guesses: SQLiteGuessStore,
     semester_id: str,
+    previous_course_ids_by_code: dict[str, int],
 ) -> None:
     payload = await fetch_courses_json(session=session, semester_id=semester_id)
     catalog_response = TeachLessonListResponse.model_validate(payload)
+    _course_ids_by_code_from_response(
+        catalog_response,
+        previous_course_ids_by_code=previous_course_ids_by_code,
+    )
+    _delete_cached_semester(store, guesses, semester_id)
     fetch_id = store.record_fetch(
         source="catalog_teach_lesson_list_for_teach",
         method="GET",
@@ -526,6 +653,7 @@ async def make_curriculum() -> None:
 
     try:
         _register_upstream_tables(store)
+        previous_course_ids_by_code = _stored_course_ids_by_code(store)
         async with USTCSession() as session:
             _delete_source_fetches(store, "catalog_teach_semester_list")
             semesters = await _store_catalog_semesters(session=session, store=store)
@@ -619,13 +747,14 @@ async def make_curriculum() -> None:
                 leave=True,
                 desc="Processing semesters",
             ):
-                _delete_cached_semester(store, guesses, str(semester.id))
                 await _store_semester(
                     session=session,
                     store=store,
                     guesses=guesses,
                     semester_id=str(semester.id),
+                    previous_course_ids_by_code=previous_course_ids_by_code,
                 )
+            _stored_course_ids_by_code(store)
     finally:
         store.close()
         guesses.close()
