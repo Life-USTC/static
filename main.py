@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from src import make_curriculum, make_rss, make_young_events
@@ -88,6 +89,11 @@ def main() -> None:
         action="store_true",
         help="Generate Young event data",
     )
+    parser.add_argument(
+        "--verify-upstream-contract",
+        action="store_true",
+        help="Fully refresh curriculum sources and verify upstream contracts",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -101,9 +107,14 @@ def main() -> None:
     static_dir = base_dir / "static"
     shutil.copytree(static_dir, build_dir, dirs_exist_ok=True)
 
-    run_all = not args.rss and not args.curriculum and not args.young
+    run_all = (
+        not args.rss
+        and not args.curriculum
+        and not args.young
+        and not args.verify_upstream_contract
+    )
     run_rss = args.rss or run_all
-    run_curriculum = args.curriculum or run_all
+    run_curriculum = args.curriculum or args.verify_upstream_contract or run_all
     run_young = args.young or run_all
 
     builders: list[tuple[str, Callable[[], Awaitable[None]], tuple[Path, ...]]] = []
@@ -113,10 +124,15 @@ def main() -> None:
         builders.append(
             (
                 "curriculum",
-                make_curriculum,
+                partial(
+                    make_curriculum,
+                    verify_upstream_contract=args.verify_upstream_contract,
+                ),
                 (
                     build_dir / SNAPSHOT_FILENAME,
                     build_dir / GUESSES_FILENAME,
+                    build_dir / "schemas" / "upstream",
+                    base_dir / ".artifacts" / "upstream-contracts",
                 ),
             )
         )
@@ -129,7 +145,10 @@ def main() -> None:
     if results and all(result["status"] == "failed" for result in results.values()):
         raise RuntimeError("All selected static builders failed")
 
-    if run_curriculum or run_young:
+    curriculum_succeeded = (
+        run_curriculum and results.get("curriculum", {}).get("status") == "ok"
+    )
+    if run_young and not curriculum_succeeded and not run_curriculum:
         schema_paths = export_upstream_schemas(build_dir / "schemas" / "upstream")
         logging.info("Exported %s upstream JSON schemas", len(schema_paths))
 

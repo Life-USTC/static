@@ -8,9 +8,9 @@ from .base import UpstreamBaseModel as BaseModel
 class DepartmentTreeItem(BaseModel):
     id: int | None
     code: str | None
-    nameZh: str | None = None
+    nameZh: str | None
     name: str | None = None
-    nameEn: str | None = None
+    nameEn: str | None
     college: bool | None = None
     isCollege: bool | None = None
     children: list[DepartmentTreeItem] | None = None
