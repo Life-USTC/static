@@ -101,6 +101,7 @@ def compare_observed_to_expected(
     expected: JsonSchema,
     *,
     check_expected_breadth: bool,
+    optional_mismatch_is_error: bool = False,
 ) -> list[ContractIssue]:
     issues: list[ContractIssue] = []
     object_instances: Counter[int] = Counter()
@@ -237,7 +238,8 @@ def compare_observed_to_expected(
             elif name not in required and total_presence == total_instances:
                 severity = (
                     "error"
-                    if total_instances >= MINIMUM_BREADTH_EVIDENCE
+                    if optional_mismatch_is_error
+                    and total_instances >= MINIMUM_BREADTH_EVIDENCE
                     else "warning"
                 )
                 add(

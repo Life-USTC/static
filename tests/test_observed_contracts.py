@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
 
-from pydantic import RootModel
+from pydantic import RootModel, ValidationError
 
 from src.models.api.base import UpstreamBaseModel
+from src.models.api.catalog_api_teach_semester_list import TeachSemesterListResponse
 from src.observed_contracts import (
     ObservedContractCollector,
     UpstreamContractError,
+    log_contract_diagnostics,
     publish_contract_artifacts,
 )
 
@@ -25,6 +29,10 @@ class ItemList(RootModel[list[Item]]):
 
 class OptionalItem(UpstreamBaseModel):
     name: str = "unknown"
+
+
+class OptionalItemList(RootModel[list[OptionalItem]]):
+    pass
 
 
 class NullableItem(UpstreamBaseModel):
@@ -97,6 +105,22 @@ class ObservedContractTest(unittest.TestCase):
                 issues = collector.verify({"item": IntegerItem})
                 self.assertIn("INCOMPATIBLE_TYPE", {issue.code for issue in issues})
 
+        with self.assertRaises(ValidationError):
+            IntegerItem.model_validate({"value": "1"})
+        with self.assertRaises(ValidationError):
+            TeachSemesterListResponse.model_validate(
+                [
+                    {
+                        "id": "1",
+                        "nameZh": "semester",
+                        "code": "20261",
+                        "start": "2026-08-30",
+                        "end": "2027-01-15",
+                        "isLast": False,
+                    }
+                ]
+            )
+
     def test_presence_optionality_and_nullability_are_distinct_failures(self) -> None:
         optional = ObservedContractCollector()
         optional.observe("item", {"name": "one"})
@@ -136,6 +160,38 @@ class ObservedContractTest(unittest.TestCase):
                 if issue.severity == "error"
             ]
         )
+
+    def test_optional_hard_failure_requires_independent_fetch_evidence(self) -> None:
+        incremental = ObservedContractCollector()
+        incremental.require_contexts("items", {"semester=1", "semester=2"})
+        incremental.observe(
+            "items",
+            [{"name": f"item-{index}"} for index in range(100)],
+            fetch_context="semester=1",
+        )
+
+        issues = incremental.verify({"items": OptionalItemList})
+        optional_issue = next(
+            issue for issue in issues if issue.code == "UNNECESSARY_OPTIONAL"
+        )
+        self.assertEqual(optional_issue.severity, "warning")
+        self.assertEqual(
+            incremental.coverage("items")["missingContexts"], ["semester=2"]
+        )
+
+        complete = ObservedContractCollector()
+        complete.require_contexts("items", {"semester=1"})
+        complete.observe(
+            "items",
+            [{"name": "one"}, {"name": "two"}],
+            fetch_context="semester=1",
+        )
+        complete_issue = next(
+            issue
+            for issue in complete.verify({"items": OptionalItemList})
+            if issue.code == "UNNECESSARY_OPTIONAL"
+        )
+        self.assertEqual(complete_issue.severity, "error")
 
     def test_recursive_evidence_is_combined_for_optionality(self) -> None:
         collector = ObservedContractCollector()
@@ -189,21 +245,28 @@ class ObservedContractTest(unittest.TestCase):
         collector.observe("item", {"name": "two"})
 
         with tempfile.TemporaryDirectory() as temporary_dir:
-            output_dir = Path(temporary_dir) / "upstream"
-            output_dir.mkdir()
-            marker = output_dir / "previous.txt"
-            marker.write_text("stable", encoding="utf-8")
+            expected_dir = Path(temporary_dir) / "expected"
+            diagnostic_dir = Path(temporary_dir) / "diagnostic"
+            expected_dir.mkdir()
+            diagnostic_dir.mkdir()
+            expected_marker = expected_dir / "previous.txt"
+            diagnostic_marker = diagnostic_dir / "previous.txt"
+            expected_marker.write_text("stable", encoding="utf-8")
+            diagnostic_marker.write_text("stable", encoding="utf-8")
 
             with self.assertRaises(UpstreamContractError):
                 publish_contract_artifacts(
                     collector,
-                    output_dir,
+                    expected_dir,
+                    diagnostic_dir,
                     observed_models={"item": OptionalItem},
                     expected_models={"item": OptionalItem},
                 )
 
-            self.assertEqual(marker.read_text(encoding="utf-8"), "stable")
-            self.assertEqual(list(output_dir.iterdir()), [marker])
+            self.assertEqual(expected_marker.read_text(encoding="utf-8"), "stable")
+            self.assertEqual(diagnostic_marker.read_text(encoding="utf-8"), "stable")
+            self.assertEqual(list(expected_dir.iterdir()), [expected_marker])
+            self.assertEqual(list(diagnostic_dir.iterdir()), [diagnostic_marker])
 
     def test_unobserved_required_endpoint_fails(self) -> None:
         collector = ObservedContractCollector()
@@ -219,23 +282,61 @@ class ObservedContractTest(unittest.TestCase):
         collector.observe("items", [{"name": "one", "tags": [1]}])
 
         with tempfile.TemporaryDirectory() as temporary_dir:
-            output_dir = Path(temporary_dir) / "upstream"
+            expected_dir = Path(temporary_dir) / "expected"
+            diagnostic_dir = Path(temporary_dir) / "diagnostic"
             publish_contract_artifacts(
                 collector,
-                output_dir,
+                expected_dir,
+                diagnostic_dir,
                 observed_models={"items": ItemList},
                 expected_models={"items": ItemList},
             )
-            first = {path.name: path.read_bytes() for path in output_dir.iterdir()}
+            first_expected = {
+                path.name: path.read_bytes() for path in expected_dir.iterdir()
+            }
+            first_diagnostic = {
+                path.name: path.read_bytes() for path in diagnostic_dir.iterdir()
+            }
             publish_contract_artifacts(
                 collector,
-                output_dir,
+                expected_dir,
+                diagnostic_dir,
                 observed_models={"items": ItemList},
                 expected_models={"items": ItemList},
             )
-            second = {path.name: path.read_bytes() for path in output_dir.iterdir()}
+            second_expected = {
+                path.name: path.read_bytes() for path in expected_dir.iterdir()
+            }
+            second_diagnostic = {
+                path.name: path.read_bytes() for path in diagnostic_dir.iterdir()
+            }
 
-            self.assertEqual(first, second)
+            self.assertEqual(first_expected, second_expected)
+            self.assertEqual(first_diagnostic, second_diagnostic)
+            self.assertEqual(set(first_expected), {"items.expected.schema.json"})
+            self.assertEqual(
+                set(first_diagnostic),
+                {"items.observed.schema.json", "contract-report.json"},
+            )
+            report = json.loads(first_diagnostic["contract-report.json"])
+            self.assertEqual(report["coverage"]["items"]["independentFetchCount"], 1)
+
+    def test_warning_summary_is_logged_with_bounded_details(self) -> None:
+        collector = ObservedContractCollector()
+        collector.observe("item", {"name": "one"})
+        issues = collector.verify({"item": NullableItem})
+
+        with self.assertLogs("contract-test", level="WARNING") as logs:
+            log_contract_diagnostics(
+                issues,
+                Path("diagnostics/contract-report.json"),
+                logger=logging.getLogger("contract-test"),
+                maximum_issue_lines=1,
+            )
+
+        output = "\n".join(logs.output)
+        self.assertIn("NULLABILITY_UNPROVEN", output)
+        self.assertIn("diagnostics/contract-report.json", output)
 
 
 if __name__ == "__main__":

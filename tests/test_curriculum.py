@@ -7,6 +7,7 @@ import httpx
 from src.curriculum import (
     _cached_complete_semester_ids,
     _course_ids_by_code_from_response,
+    _curriculum_semesters_to_refresh,
     _has_cached_jw_schedule,
     _is_skippable_exam_fetch_error,
     _jw_schedule_expected_chunk_count_key,
@@ -381,6 +382,21 @@ class SemesterCacheTest(unittest.TestCase):
         )
 
         self.assertEqual([semester.id for semester in refreshed], ["241", "441", "461"])
+
+    def test_contract_verification_refreshes_every_selected_semester(self) -> None:
+        semesters = [
+            _semester("221", end_date=100),
+            _semester("461", end_date=400),
+        ]
+
+        refreshed = _curriculum_semesters_to_refresh(
+            semesters,
+            cached_semester_ids={"221", "461"},
+            now_timestamp=500,
+            verify_upstream_contract=True,
+        )
+
+        self.assertEqual(refreshed, semesters)
 
     def test_cached_complete_semester_ids_require_lesson_jw_and_exam_when_needed(
         self,

@@ -17,7 +17,11 @@ from .models.api.catalog_api_teach_semester_list import TeachSemesterListRespons
 from .models.api.jw_ws_schedule_table_datum import JwWsScheduleTableDatumResponse
 from .models.course import Course
 from .models.semester import Semester
-from .observed_contracts import ObservedContractCollector, publish_contract_artifacts
+from .observed_contracts import (
+    ObservedContractCollector,
+    log_contract_diagnostics,
+    publish_contract_artifacts,
+)
 from .sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
 from .upstream_contracts import (
     CATALOG_DEPARTMENTS,
@@ -38,7 +42,7 @@ from .utils.catalog import (
     parse_semesters,
 )
 from .utils.jw import fetch_jw_schedule_table_json
-from .utils.tools import BUILD_DIR
+from .utils.tools import BASE_DIR, BUILD_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +236,22 @@ def _refresh_curriculum_semesters(
         if not _semester_has_ended(semester, now_timestamp)
         or str(semester.id) not in cached_semester_ids
     ]
+
+
+def _curriculum_semesters_to_refresh(
+    semesters: list[Semester],
+    *,
+    cached_semester_ids: set[str],
+    now_timestamp: int,
+    verify_upstream_contract: bool,
+) -> list[Semester]:
+    if verify_upstream_contract:
+        return semesters
+    return _refresh_curriculum_semesters(
+        semesters,
+        cached_semester_ids=cached_semester_ids,
+        now_timestamp=now_timestamp,
+    )
 
 
 def _cached_complete_semester_ids(
@@ -463,6 +483,7 @@ async def _store_catalog_semesters(
         CATALOG_SEMESTERS,
         payload,
         CURRICULUM_UPSTREAM_RESPONSE_MODELS[CATALOG_SEMESTERS],
+        fetch_context="request",
     )
     response = TeachSemesterListResponse.model_validate(payload)
     fetch_id = store.record_fetch(
@@ -489,6 +510,7 @@ async def _store_catalog_departments(
         CATALOG_DEPARTMENTS,
         payload,
         CURRICULUM_UPSTREAM_RESPONSE_MODELS[CATALOG_DEPARTMENTS],
+        fetch_context="request",
     )
     response = DepartmentCollegeTreeResponse.model_validate(payload)
     fetch_id = store.record_fetch(
@@ -547,6 +569,7 @@ async def _store_catalog_exams(
         CATALOG_EXAMS,
         payload,
         CURRICULUM_UPSTREAM_RESPONSE_MODELS[CATALOG_EXAMS],
+        fetch_context=f"semester={semester_id}",
     )
     response = TeachExamListResponse.model_validate(payload)
     fetch_id = store.record_fetch(
@@ -609,6 +632,8 @@ async def _store_jw_schedule_chunks(
             JW_SCHEDULES,
             payload,
             CURRICULUM_UPSTREAM_RESPONSE_MODELS[JW_SCHEDULES],
+            fetch_context=f"semester={semester_id};chunk={chunk_index}",
+            coverage_context=f"semester={semester_id}",
         )
         response = JwWsScheduleTableDatumResponse.model_validate(payload)
         schedule_responses.append(response)
@@ -650,6 +675,7 @@ async def _store_semester(
         CATALOG_LESSONS,
         payload,
         CURRICULUM_UPSTREAM_RESPONSE_MODELS[CATALOG_LESSONS],
+        fetch_context=f"semester={semester_id}",
     )
     catalog_response = TeachLessonListResponse.model_validate(payload)
     _course_ids_by_code_from_response(
@@ -689,7 +715,7 @@ async def _store_semester(
     )
 
 
-async def make_curriculum() -> None:
+async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     snapshot_path = BUILD_DIR / SNAPSHOT_FILENAME
     guesses_path = BUILD_DIR / GUESSES_FILENAME
@@ -698,6 +724,8 @@ async def make_curriculum() -> None:
     store = SQLiteModelStore(snapshot_path, reset=not reuse_snapshot)
     guesses = SQLiteGuessStore(guesses_path, reset=not reuse_guesses)
     contracts = ObservedContractCollector()
+    contracts.require_contexts(CATALOG_SEMESTERS, {"request"})
+    contracts.require_contexts(CATALOG_DEPARTMENTS, {"request"})
 
     try:
         _register_upstream_tables(store)
@@ -712,6 +740,19 @@ async def make_curriculum() -> None:
                 session=session, store=store, contracts=contracts
             )
             selected_semesters = _selected_curriculum_semesters(semesters)
+            selected_semester_ids = {
+                f"semester={semester.id}" for semester in selected_semesters
+            }
+            contracts.require_contexts(CATALOG_LESSONS, selected_semester_ids)
+            contracts.require_contexts(JW_SCHEDULES, selected_semester_ids)
+            contracts.require_contexts(
+                CATALOG_EXAMS,
+                {
+                    f"semester={semester.id}"
+                    for semester in selected_semesters
+                    if _should_fetch_catalog_exams(str(semester.id))
+                },
+            )
             reuse_curriculum_cache = reuse_snapshot and reuse_guesses
             cached_semester_ids = (
                 _cached_complete_semester_ids(store, selected_semesters)
@@ -719,10 +760,11 @@ async def make_curriculum() -> None:
                 else set()
             )
             now_timestamp = int(time.time())
-            refreshed_semesters = _refresh_curriculum_semesters(
+            refreshed_semesters = _curriculum_semesters_to_refresh(
                 selected_semesters,
                 cached_semester_ids=cached_semester_ids,
                 now_timestamp=now_timestamp,
+                verify_upstream_contract=verify_upstream_contract,
             )
             refreshed_semester_ids = {
                 str(semester.id) for semester in refreshed_semesters
@@ -744,7 +786,9 @@ async def make_curriculum() -> None:
             ]
             store.put_metadata(
                 {
-                    "curriculum_mode": "incremental"
+                    "curriculum_mode": "contract_verification"
+                    if verify_upstream_contract
+                    else "incremental"
                     if reuse_curriculum_cache
                     else "all",
                     "curriculum_cache_source": "previous_artifact"
@@ -808,7 +852,17 @@ async def make_curriculum() -> None:
                     previous_course_ids_by_code=previous_course_ids_by_code,
                 )
             _stored_course_ids_by_code(store)
-            publish_contract_artifacts(contracts, BUILD_DIR / "schemas" / "upstream")
+            diagnostic_dir = BASE_DIR / ".artifacts" / "upstream-contracts"
+            issues = publish_contract_artifacts(
+                contracts,
+                BUILD_DIR / "schemas" / "upstream",
+                diagnostic_dir,
+            )
+            log_contract_diagnostics(
+                issues,
+                diagnostic_dir / "contract-report.json",
+                logger=logger,
+            )
     finally:
         store.close()
         guesses.close()
