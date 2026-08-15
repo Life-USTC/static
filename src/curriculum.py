@@ -17,8 +17,17 @@ from .models.api.catalog_api_teach_semester_list import TeachSemesterListRespons
 from .models.api.jw_ws_schedule_table_datum import JwWsScheduleTableDatumResponse
 from .models.course import Course
 from .models.semester import Semester
+from .observed_contracts import ObservedContractCollector, publish_contract_artifacts
 from .sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
-from .upstream_contracts import UPSTREAM_RESPONSE_MODELS
+from .upstream_contracts import (
+    CATALOG_DEPARTMENTS,
+    CATALOG_EXAMS,
+    CATALOG_LESSONS,
+    CATALOG_SEMESTERS,
+    CURRICULUM_UPSTREAM_RESPONSE_MODELS,
+    JW_SCHEDULES,
+    UPSTREAM_RESPONSE_MODELS,
+)
 from .utils.auth import RequestSession, USTCSession
 from .utils.catalog import (
     fetch_courses_json,
@@ -445,9 +454,16 @@ def _register_upstream_tables(store: SQLiteModelStore) -> None:
 
 
 async def _store_catalog_semesters(
-    session: RequestSession, store: SQLiteModelStore
+    session: RequestSession,
+    store: SQLiteModelStore,
+    contracts: ObservedContractCollector,
 ) -> list[Semester]:
     payload = await fetch_semesters_json(session=session)
+    contracts.observe_and_assert_compatible(
+        CATALOG_SEMESTERS,
+        payload,
+        CURRICULUM_UPSTREAM_RESPONSE_MODELS[CATALOG_SEMESTERS],
+    )
     response = TeachSemesterListResponse.model_validate(payload)
     fetch_id = store.record_fetch(
         source="catalog_teach_semester_list",
@@ -464,9 +480,16 @@ async def _store_catalog_semesters(
 
 
 async def _store_catalog_departments(
-    session: RequestSession, store: SQLiteModelStore
+    session: RequestSession,
+    store: SQLiteModelStore,
+    contracts: ObservedContractCollector,
 ) -> None:
     payload = await fetch_departments_json(session=session)
+    contracts.observe_and_assert_compatible(
+        CATALOG_DEPARTMENTS,
+        payload,
+        CURRICULUM_UPSTREAM_RESPONSE_MODELS[CATALOG_DEPARTMENTS],
+    )
     response = DepartmentCollegeTreeResponse.model_validate(payload)
     fetch_id = store.record_fetch(
         source="catalog_teach_department_college_tree",
@@ -485,6 +508,7 @@ async def _store_catalog_exams(
     *,
     session: RequestSession,
     store: SQLiteModelStore,
+    contracts: ObservedContractCollector,
     semester_id: str,
 ) -> None:
     url = f"{CATALOG_EXAM_URL_PREFIX}/{semester_id}"
@@ -519,6 +543,11 @@ async def _store_catalog_exams(
         )
         return
 
+    contracts.observe_and_assert_compatible(
+        CATALOG_EXAMS,
+        payload,
+        CURRICULUM_UPSTREAM_RESPONSE_MODELS[CATALOG_EXAMS],
+    )
     response = TeachExamListResponse.model_validate(payload)
     fetch_id = store.record_fetch(
         source="catalog_teach_exam_list",
@@ -539,6 +568,7 @@ async def _store_jw_schedule_chunks(
     session: RequestSession,
     store: SQLiteModelStore,
     guesses: SQLiteGuessStore,
+    contracts: ObservedContractCollector,
     semester_id: str,
     catalog_response: TeachLessonListResponse,
     courses: list[Course],
@@ -575,6 +605,11 @@ async def _store_jw_schedule_chunks(
             )
             raise
 
+        contracts.observe_and_assert_compatible(
+            JW_SCHEDULES,
+            payload,
+            CURRICULUM_UPSTREAM_RESPONSE_MODELS[JW_SCHEDULES],
+        )
         response = JwWsScheduleTableDatumResponse.model_validate(payload)
         schedule_responses.append(response)
         fetch_id = store.record_fetch(
@@ -606,10 +641,16 @@ async def _store_semester(
     session: RequestSession,
     store: SQLiteModelStore,
     guesses: SQLiteGuessStore,
+    contracts: ObservedContractCollector,
     semester_id: str,
     previous_course_ids_by_code: dict[str, int],
 ) -> None:
     payload = await fetch_courses_json(session=session, semester_id=semester_id)
+    contracts.observe_and_assert_compatible(
+        CATALOG_LESSONS,
+        payload,
+        CURRICULUM_UPSTREAM_RESPONSE_MODELS[CATALOG_LESSONS],
+    )
     catalog_response = TeachLessonListResponse.model_validate(payload)
     _course_ids_by_code_from_response(
         catalog_response,
@@ -631,11 +672,17 @@ async def _store_semester(
     logger.info("Stored %s catalog lessons for semester %s", lesson_count, semester_id)
 
     courses = parse_courses(payload)
-    await _store_catalog_exams(session=session, store=store, semester_id=semester_id)
+    await _store_catalog_exams(
+        session=session,
+        store=store,
+        contracts=contracts,
+        semester_id=semester_id,
+    )
     await _store_jw_schedule_chunks(
         session=session,
         store=store,
         guesses=guesses,
+        contracts=contracts,
         semester_id=semester_id,
         catalog_response=catalog_response,
         courses=courses,
@@ -650,15 +697,20 @@ async def make_curriculum() -> None:
     reuse_guesses = guesses_path.exists()
     store = SQLiteModelStore(snapshot_path, reset=not reuse_snapshot)
     guesses = SQLiteGuessStore(guesses_path, reset=not reuse_guesses)
+    contracts = ObservedContractCollector()
 
     try:
         _register_upstream_tables(store)
         previous_course_ids_by_code = _stored_course_ids_by_code(store)
         async with USTCSession() as session:
             _delete_source_fetches(store, "catalog_teach_semester_list")
-            semesters = await _store_catalog_semesters(session=session, store=store)
+            semesters = await _store_catalog_semesters(
+                session=session, store=store, contracts=contracts
+            )
             _delete_source_fetches(store, "catalog_teach_department_college_tree")
-            await _store_catalog_departments(session=session, store=store)
+            await _store_catalog_departments(
+                session=session, store=store, contracts=contracts
+            )
             selected_semesters = _selected_curriculum_semesters(semesters)
             reuse_curriculum_cache = reuse_snapshot and reuse_guesses
             cached_semester_ids = (
@@ -751,10 +803,12 @@ async def make_curriculum() -> None:
                     session=session,
                     store=store,
                     guesses=guesses,
+                    contracts=contracts,
                     semester_id=str(semester.id),
                     previous_course_ids_by_code=previous_course_ids_by_code,
                 )
             _stored_course_ids_by_code(store)
+            publish_contract_artifacts(contracts, BUILD_DIR / "schemas" / "upstream")
     finally:
         store.close()
         guesses.close()

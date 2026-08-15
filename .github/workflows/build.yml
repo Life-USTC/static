@@ -75,7 +75,9 @@ jobs:
         run: |
           test -s build/build-status.json
           test -d build/schemas/upstream
-          test "$(find build/schemas/upstream -name '*.schema.json' | wc -l)" -ge 5
+          test "$(find build/schemas/upstream -name '*.expected.schema.json' | wc -l)" -eq 7
+          test "$(find build/schemas/upstream -name '*.observed.schema.json' | wc -l)" -eq 5
+          test -s build/schemas/upstream/contract-report.json
           uv run --no-dev python - <<'PY'
           import json
           from pathlib import Path

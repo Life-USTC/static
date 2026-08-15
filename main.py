@@ -117,6 +117,7 @@ def main() -> None:
                 (
                     build_dir / SNAPSHOT_FILENAME,
                     build_dir / GUESSES_FILENAME,
+                    build_dir / "schemas" / "upstream",
                 ),
             )
         )
@@ -129,7 +130,10 @@ def main() -> None:
     if results and all(result["status"] == "failed" for result in results.values()):
         raise RuntimeError("All selected static builders failed")
 
-    if run_curriculum or run_young:
+    curriculum_succeeded = (
+        run_curriculum and results.get("curriculum", {}).get("status") == "ok"
+    )
+    if run_young and not curriculum_succeeded and not run_curriculum:
         schema_paths = export_upstream_schemas(build_dir / "schemas" / "upstream")
         logging.info("Exported %s upstream JSON schemas", len(schema_paths))
 

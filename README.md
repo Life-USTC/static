@@ -11,7 +11,9 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 |------|------|
 | `life-ustc-static.sqlite` | 规范化后的上游响应（课程 / 课表等） |
 | `life-ustc-static-guesses.sqlite` | 无法直接从上游键出的推断关系 |
-| `schemas/upstream/*.schema.json` | 各上游响应的 JSON Schema |
+| `schemas/upstream/*.expected.schema.json` | 从 Pydantic 生成的上游契约 |
+| `schemas/upstream/*.observed.schema.json` | 本次 curriculum 完整抓取反推的确定性契约与计数 |
+| `schemas/upstream/contract-report.json` | expected / observed 交叉检查策略及非阻断提示 |
 | `rss/` | 清洗后的校内新闻等 XML 订阅 |
 | `bus_data*.json` / `geo_data.json` / `building_img_rules.json` / `feed_source.json` / `imgs/` | 校车、地理、建筑图规则、订阅源元数据与图片 |
 
@@ -30,6 +32,13 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 
 日更由 GitHub Actions（`build.yml`）驱动。本地与测试约定见仓库内 `tests/` 与
 `pyproject.toml`；本 README 只描述产物语义。
+
+本地执行 `uv run python main.py --curriculum` 会在 Pydantic validation 前累计原始
+JSON，并在替换 SQLite 和 schema 产物前完成契约检查。上游新增字段、缺失 required
+字段、类型不兼容，以及有充分 object-instance 证据的多余 optional 都会使 builder
+失败并保留上一份产物。单次抓取不足以证明长期 nullability；未出现的 nullable / union
+分支、始终为 null 的值和空数组元素类型会明确写入 report 作为 warning，并保留观测
+计数供后续人工判断。
 
 ## License & Warranty
 

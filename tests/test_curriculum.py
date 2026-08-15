@@ -25,6 +25,7 @@ from src.models.api.catalog_api_teach_lesson_list_for_teach import (
     TeachLessonListResponse,
 )
 from src.models.semester import Semester
+from src.observed_contracts import ObservedContractCollector
 from src.sqlite_store import SQLiteModelStore
 
 
@@ -246,6 +247,7 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
                     session=MagicMock(),
                     store=store,
                     guesses=guesses,
+                    contracts=ObservedContractCollector(),
                     semester_id="401",
                     catalog_response=TeachLessonListResponse(root=[]),
                     courses=[MagicMock() for _ in range(101)],
@@ -306,6 +308,7 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
                     session=MagicMock(),
                     store=store,
                     guesses=guesses,
+                    contracts=ObservedContractCollector(),
                     semester_id="401",
                     catalog_response=TeachLessonListResponse(root=[]),
                     courses=[MagicMock() for _ in range(101)],
