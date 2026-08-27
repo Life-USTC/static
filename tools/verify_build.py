@@ -58,10 +58,9 @@ def _write_status_summary(
     summary_path: Path | None,
     builders: dict[str, dict[str, str]],
 ) -> None:
-    failed = [name for name in BUILDER_NAMES if builders[name]["status"] != "ok"]
     lines = ["## Static build status\n\n", "| Builder | Status |\n", "|---|---|\n"]
     lines.extend(f"| {name} | {builders[name]['status']} |\n" for name in BUILDER_NAMES)
-    if failed:
+    if builders["curriculum"]["status"] != "ok":
         lines.extend(
             [
                 "\n",
