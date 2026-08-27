@@ -3,10 +3,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.verify_build import verify_build
+from tools.verify_build import _write_status_summary, verify_build
 
 
 class BuildVerificationTest(unittest.TestCase):
+    def test_non_curriculum_failure_does_not_claim_contracts_were_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            summary_path = Path(temporary_dir) / "summary.md"
+            _write_status_summary(
+                summary_path,
+                {
+                    "curriculum": {"status": "ok"},
+                    "young": {"status": "failed"},
+                    "rss": {"status": "ok"},
+                },
+            )
+
+            self.assertNotIn("skipped", summary_path.read_text(encoding="utf-8"))
+
     def test_failed_authenticated_builders_skip_missing_contract_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
