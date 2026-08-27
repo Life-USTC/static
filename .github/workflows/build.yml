@@ -73,45 +73,7 @@ jobs:
           uv run --no-dev python main.py
       - name: Verify SQLite snapshots and schemas
         run: |
-          test -s build/build-status.json
-          test -d build/schemas/upstream
-          test "$(find build/schemas/upstream -name '*.expected.schema.json' | wc -l)" -eq 7
-          test "$(find .artifacts/upstream-contracts -name '*.observed.schema.json' | wc -l)" -eq 5
-          test -s .artifacts/upstream-contracts/contract-report.json
-          uv run --no-dev python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          build = Path("build")
-          builders = json.loads((build / "build-status.json").read_text())["builders"]
-          report = json.loads(
-              Path(".artifacts/upstream-contracts/contract-report.json").read_text()
-          )
-          summary = report["summary"]
-          print("Upstream contract diagnostics:", json.dumps(summary, sort_keys=True))
-          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
-              output.write("## Upstream contract diagnostics\n\n")
-              output.write(f"- Errors: {summary['errors']}\n")
-              output.write(f"- Warnings: {summary['warnings']}\n")
-              output.write(f"- Counts: `{json.dumps(summary['issueCounts'], sort_keys=True)}`\n")
-              output.write("\n| Endpoint | Coverage | Fetches | Missing contexts |\n")
-              output.write("|---|---:|---:|---:|\n")
-              for endpoint, coverage in report["coverage"].items():
-                  output.write(
-                      f"| {endpoint} | {coverage['coverageComplete']} | "
-                      f"{coverage['independentFetchCount']} | "
-                      f"{len(coverage['missingContexts'])} |\n"
-                  )
-          if builders["curriculum"]["status"] == "ok":
-              assert (build / "life-ustc-static.sqlite").is_file()
-              assert (build / "life-ustc-static-guesses.sqlite").is_file()
-          if builders["young"]["status"] == "ok":
-              assert (build / "life-ustc-static.sqlite").is_file()
-          if builders["rss"]["status"] == "ok":
-              feeds = list((build / "rss").glob("*.xml"))
-              assert feeds and all(feed.stat().st_size > 0 for feed in feeds)
-          PY
+          uv run --no-dev python tools/verify_build.py
       - name: Prepare Pages artifact
         run: |
           find build -name '*.observed.schema.json' -delete
