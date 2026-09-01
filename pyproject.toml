@@ -24,7 +24,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "coverage>=7.10.0",
-    "ruff>=0.16.4",
+    "ruff>=0.16.5",
 ]
 
 [project.scripts]
