@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -19,55 +23,47 @@ YOUNG_ACTIVE_ENDPOINT = "/mobile/item/enrolmentList"
 YOUNG_ENDED_ENDPOINT = "/mobile/item/endList"
 YOUNG_ACTIVE_SOURCE = "young_mobile_item_enrolment_list"
 YOUNG_ENDED_SOURCE = "young_mobile_item_end_list"
-YOUNG_ENDED_PROBE_SOURCE = "young_mobile_item_end_list_probe"
+
+_OBSOLETE_YOUNG_METADATA_KEYS = (
+    "young_events_cache_source",
+    "young_active_refreshed",
+    "young_ended_refreshed",
+    "young_ended_cached_record_count",
+    "young_ended_probe_total",
+    "young_ended_probe_fetch_id",
+)
+_OBSOLETE_YOUNG_PROBE_SOURCE = "young_mobile_item_end_list_probe"
 
 logger = logging.getLogger(__name__)
-
-
-def _should_refresh_ended_events(*, cached_count: int, upstream_total: int) -> bool:
-    return cached_count != upstream_total
 
 
 def _young_result(payload: dict[str, Any]) -> dict[str, Any]:
     result = payload.get("result")
     if not isinstance(result, dict):
-        return {}
+        raise TypeError("Young endpoint returned no result object")
     return result
 
 
 def _young_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    records = _young_result(payload).get("records") or []
-    return [record for record in records if isinstance(record, dict)]
+    result = _young_result(payload)
+    records = result.get("records")
+    if records is None and result.get("total") == 0:
+        return []
+    if not isinstance(records, list):
+        raise TypeError("Young endpoint returned non-list records")
+    if any(not isinstance(record, dict) for record in records):
+        raise TypeError("Young endpoint returned a malformed record")
+    return records
 
 
 def _young_total(payload: dict[str, Any]) -> int:
     result = _young_result(payload)
-    return int(result.get("total") or len(_young_records(payload)))
-
-
-def _cached_young_event_count(store: SQLiteModelStore, source: str) -> int:
-    table_name = f"{source}_result_records"
-    table_exists = store.conn.execute(
-        """
-        SELECT 1 FROM sqlite_master
-        WHERE type = 'table' AND name = ?
-        LIMIT 1
-        """,
-        (table_name,),
-    ).fetchone()
-    if table_exists is None:
-        return 0
-
-    row = store.conn.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM "{table_name}" records
-        JOIN upstream_fetches fetches ON fetches.id = records.fetch_id
-        WHERE fetches.source = ? AND fetches.ok = 1
-        """,
-        (source,),
-    ).fetchone()
-    return int(row[0]) if row else 0
+    total = result.get("total")
+    if isinstance(total, bool) or not isinstance(total, int):
+        raise TypeError("Young endpoint returned an invalid total")
+    if total < 0:
+        raise ValueError("Young endpoint returned a negative total")
+    return total
 
 
 def _delete_young_source(store: SQLiteModelStore, source: str) -> None:
@@ -81,6 +77,33 @@ def _delete_young_source(store: SQLiteModelStore, source: str) -> None:
     store.delete_fetches(fetch_ids)
 
 
+def _validate_young_record_ids(records: list[dict[str, Any]], *, endpoint: str) -> None:
+    seen_ids: set[str] = set()
+    for record in records:
+        event_id = record.get("id")
+        if isinstance(event_id, bool) or not isinstance(event_id, (int, str)):
+            raise TypeError(f"Young endpoint {endpoint} returned a record without id")
+        normalized_id = str(event_id).strip()
+        if not normalized_id:
+            raise ValueError(f"Young endpoint {endpoint} returned an empty id")
+        if normalized_id in seen_ids:
+            raise ValueError(
+                f"Young endpoint {endpoint} returned duplicate event id {normalized_id}"
+            )
+        seen_ids.add(normalized_id)
+
+
+def _clear_obsolete_young_state(store: SQLiteModelStore) -> None:
+    # Older snapshots may contain the count-only ended probe. Remove its rows
+    # and metadata once the first complete refresh succeeds.
+    _delete_young_source(store, _OBSOLETE_YOUNG_PROBE_SOURCE)
+    placeholders = ", ".join("?" for _ in _OBSOLETE_YOUNG_METADATA_KEYS)
+    store.conn.execute(
+        f"DELETE FROM metadata WHERE key IN ({placeholders})",
+        _OBSOLETE_YOUNG_METADATA_KEYS,
+    )
+
+
 def _store_young_event_payload(
     store: SQLiteModelStore,
     *,
@@ -92,6 +115,12 @@ def _store_young_event_payload(
 ) -> int:
     records = _young_records(payload)
     total = _young_total(payload)
+    _validate_young_record_ids(records, endpoint=endpoint)
+    if len(records) != total:
+        raise ValueError(
+            f"Young endpoint {endpoint} returned {len(records)} records "
+            f"for total {total}"
+        )
     fetch_id = store.record_fetch(
         source=source,
         method="GET",
@@ -160,14 +189,21 @@ async def _fetch_young_event_page(
     result = payload.get("result")
     if not isinstance(result, dict):
         raise RuntimeError(f"Young endpoint {endpoint} returned no result object")
+    _young_total(payload)
+    _young_records(payload)
     return payload
 
 
 async def _fetch_young_event_list(
     session: Any, *, endpoint: str, page_size: int = 3000
 ) -> dict[str, Any]:
+    if page_size < 1:
+        raise ValueError("Young page size must be positive")
+
     records: list[dict[str, Any]] = []
     first_payload: dict[str, Any] | None = None
+    expected_total: int | None = None
+    seen_ids: set[str] = set()
     page_no = 1
 
     while True:
@@ -177,63 +213,79 @@ async def _fetch_young_event_list(
             page_no=page_no,
             page_size=page_size,
         )
-        result = _young_result(payload)
-
         if first_payload is None:
             first_payload = payload
 
-        page_records = result.get("records") or []
-        if not isinstance(page_records, list):
-            raise TypeError(f"Young endpoint {endpoint} returned non-list records")
-        records.extend(record for record in page_records if isinstance(record, dict))
+        page_records = _young_records(payload)
+        page_total = _young_total(payload)
+        if expected_total is None:
+            expected_total = page_total
+        elif page_total != expected_total:
+            raise ValueError(f"Young endpoint {endpoint} changed total between pages")
+        if len(page_records) > page_size:
+            raise ValueError(f"Young endpoint {endpoint} returned an oversized page")
 
-        total = int(result.get("total") or len(records))
-        if len(records) >= total or not page_records:
+        _validate_young_record_ids(page_records, endpoint=endpoint)
+        for record in page_records:
+            normalized_id = str(record["id"]).strip()
+            if normalized_id in seen_ids:
+                raise ValueError(
+                    f"Young endpoint {endpoint} repeated event id {normalized_id}"
+                )
+            seen_ids.add(normalized_id)
+
+        records.extend(page_records)
+        if expected_total == len(records):
             break
+        if not page_records:
+            raise ValueError(
+                f"Young endpoint {endpoint} ended before returning its total"
+            )
+        if len(records) > expected_total:
+            raise ValueError(
+                f"Young endpoint {endpoint} returned more records than its total"
+            )
         page_no += 1
 
-    if first_payload is None:
+    if first_payload is None or expected_total is None:
         raise RuntimeError(f"Young endpoint {endpoint} returned no pages")
-    first_payload["result"]["records"] = records
+    if len(records) != expected_total:
+        raise ValueError(
+            f"Young endpoint {endpoint} returned an incomplete record list"
+        )
+    _young_result(first_payload)["records"] = records
     return first_payload
-
-
-def _record_young_probe(
-    store: SQLiteModelStore, *, endpoint: str, payload: dict[str, Any], page_size: int
-) -> int:
-    _delete_young_source(store, YOUNG_ENDED_PROBE_SOURCE)
-    total = _young_total(payload)
-    fetch_id = store.record_fetch(
-        source=YOUNG_ENDED_PROBE_SOURCE,
-        method="GET",
-        url=_young_api_url(endpoint, {"pageNo": 1, "pageSize": page_size}),
-        context={"page_size": page_size},
-    )
-    store.put_metadata(
-        {
-            "young_ended_probe_total": total,
-            "young_ended_probe_fetch_id": fetch_id,
-        }
-    )
-    return total
 
 
 async def make_young_events() -> None:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     snapshot_path = BUILD_DIR / SNAPSHOT_FILENAME
     reuse_snapshot = snapshot_path.exists()
-    store = SQLiteModelStore(snapshot_path, reset=not reuse_snapshot)
 
-    try:
-        async with USTCSession(after_login_services=False) as session:
-            await _prepare_young_session(session)
+    with tempfile.TemporaryDirectory(
+        dir=BUILD_DIR, prefix="young-refresh-"
+    ) as temporary_dir:
+        staged_snapshot_path = Path(temporary_dir) / SNAPSHOT_FILENAME
+        if reuse_snapshot:
+            shutil.copy2(snapshot_path, staged_snapshot_path)
 
+        store = SQLiteModelStore(staged_snapshot_path, reset=not reuse_snapshot)
+        try:
+            async with USTCSession(after_login_services=False) as session:
+                await _prepare_young_session(session)
+                active_payload = await _fetch_young_event_list(
+                    session,
+                    endpoint=YOUNG_ACTIVE_ENDPOINT,
+                    page_size=YOUNG_PAGE_SIZE,
+                )
+                ended_payload = await _fetch_young_event_list(
+                    session,
+                    endpoint=YOUNG_ENDED_ENDPOINT,
+                    page_size=YOUNG_PAGE_SIZE,
+                )
+
+            _clear_obsolete_young_state(store)
             _delete_young_source(store, YOUNG_ACTIVE_SOURCE)
-            active_payload = await _fetch_young_event_list(
-                session,
-                endpoint=YOUNG_ACTIVE_ENDPOINT,
-                page_size=YOUNG_PAGE_SIZE,
-            )
             active_count = _store_young_event_payload(
                 store,
                 source=YOUNG_ACTIVE_SOURCE,
@@ -242,65 +294,33 @@ async def make_young_events() -> None:
                 list_type="active",
                 page_size=YOUNG_PAGE_SIZE,
             )
-
-            ended_probe = await _fetch_young_event_page(
-                session,
-                endpoint=YOUNG_ENDED_ENDPOINT,
-                page_no=1,
-                page_size=1,
-            )
-            ended_total = _record_young_probe(
+            _delete_young_source(store, YOUNG_ENDED_SOURCE)
+            ended_count = _store_young_event_payload(
                 store,
+                source=YOUNG_ENDED_SOURCE,
                 endpoint=YOUNG_ENDED_ENDPOINT,
-                payload=ended_probe,
-                page_size=1,
+                payload=ended_payload,
+                list_type="ended",
+                page_size=YOUNG_PAGE_SIZE,
             )
-            cached_ended_count = (
-                _cached_young_event_count(store, YOUNG_ENDED_SOURCE)
-                if reuse_snapshot
-                else 0
-            )
-            refresh_ended = _should_refresh_ended_events(
-                cached_count=cached_ended_count,
-                upstream_total=ended_total,
-            )
-            if refresh_ended:
-                _delete_young_source(store, YOUNG_ENDED_SOURCE)
-                ended_payload = await _fetch_young_event_list(
-                    session,
-                    endpoint=YOUNG_ENDED_ENDPOINT,
-                    page_size=max(YOUNG_PAGE_SIZE, ended_total),
-                )
-                ended_count = _store_young_event_payload(
-                    store,
-                    source=YOUNG_ENDED_SOURCE,
-                    endpoint=YOUNG_ENDED_ENDPOINT,
-                    payload=ended_payload,
-                    list_type="ended",
-                    page_size=max(YOUNG_PAGE_SIZE, ended_total),
-                )
-            else:
-                ended_count = cached_ended_count
 
             store.put_metadata(
                 {
-                    "young_events_mode": "incremental" if reuse_snapshot else "all",
-                    "young_events_cache_source": "previous_artifact"
-                    if reuse_snapshot
-                    else "none",
-                    "young_active_refreshed": 1,
+                    "young_events_mode": "full",
                     "young_active_record_count": active_count,
-                    "young_ended_refreshed": int(refresh_ended),
-                    "young_ended_cached_record_count": cached_ended_count,
+                    "young_active_total": _young_total(active_payload),
                     "young_ended_record_count": ended_count,
-                    "young_ended_total": ended_total,
+                    "young_ended_total": _young_total(ended_payload),
                 }
             )
             logger.info(
-                "Stored %s active Young event(s); %s ended event(s), refreshed=%s",
+                "Stored %s active Young event(s) and %s ended event(s)",
                 active_count,
                 ended_count,
-                refresh_ended,
             )
-    finally:
-        store.close()
+        finally:
+            store.close()
+
+        # The previous usable snapshot is untouched until both lists have been
+        # fetched, validated, and committed to the staging database.
+        os.replace(staged_snapshot_path, snapshot_path)

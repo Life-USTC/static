@@ -30,6 +30,8 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 - **young** — `young.ustc.edu.cn` 智慧团学活动 → 写入同一快照库
 - **rss** — 校主页新闻、教务处、应用通知等源 → XML；另含体教中心等爬取源
 
+Young 每次构建都会完整刷新进行中和已结束活动列表，并在分页不完整或上游请求失败时保留上一份可用快照。
+
 失败的 builder 会回滚该 builder 的旧产物；`build-status.json` 记录各 builder 状态。
 旧的 curriculum JSON 端点与 upstream response cache **已停发**。
 
