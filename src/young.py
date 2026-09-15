@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -282,9 +283,13 @@ async def make_young_events() -> None:
                 page_size=YOUNG_PAGE_SIZE,
             )
 
+            # Keep Young freshness independent from the shared snapshot
+            # generated_at, which unrelated builders may update later.
+            young_synced_at = datetime.now(UTC).isoformat()
             store.put_metadata(
                 {
                     "young_events_mode": "full",
+                    "young_events_synced_at": young_synced_at,
                     "young_active_record_count": active_count,
                     "young_active_total": _young_total(active_payload),
                     "young_ended_record_count": ended_count,

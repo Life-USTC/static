@@ -1,10 +1,12 @@
 import copy
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlsplit
 
+from main import _run_builders
 from src.sqlite_store import SQLiteModelStore
 from src.young import (
     SNAPSHOT_FILENAME,
@@ -228,7 +230,13 @@ class YoungEventFetchTest(unittest.IsolatedAsyncioTestCase):
 
 
 class YoungEventRefreshTest(unittest.IsolatedAsyncioTestCase):
-    def _write_snapshot(self, path: Path, *, item_name: str) -> None:
+    def _write_snapshot(
+        self,
+        path: Path,
+        *,
+        item_name: str,
+        young_synced_at: str | None = None,
+    ) -> None:
         store = SQLiteModelStore(path)
         try:
             _store_young_event_payload(
@@ -238,6 +246,16 @@ class YoungEventRefreshTest(unittest.IsolatedAsyncioTestCase):
                 payload=_payload([{"id": "ended-1", "itemName": item_name}]),
                 list_type="ended",
                 page_size=3000,
+            )
+            store.put_metadata(
+                {
+                    "young_events_mode": "full",
+                    **(
+                        {"young_events_synced_at": young_synced_at}
+                        if young_synced_at is not None
+                        else {}
+                    ),
+                }
             )
         finally:
             store.close()
@@ -280,15 +298,59 @@ class YoungEventRefreshTest(unittest.IsolatedAsyncioTestCase):
                 row = refreshed.conn.execute(
                     f"SELECT id, itemName FROM {YOUNG_ENDED_SOURCE}_result_records"
                 ).fetchone()
+                metadata = dict(
+                    refreshed.conn.execute("SELECT key, value FROM metadata")
+                )
             finally:
                 refreshed.close()
             self.assertEqual(row, ("ended-1", "new name"))
+            self.assertEqual(metadata["young_events_mode"], "full")
+            synced_at = datetime.fromisoformat(metadata["young_events_synced_at"])
+            self.assertIsNotNone(synced_at.tzinfo)
+            self.assertEqual(synced_at.utcoffset(), UTC.utcoffset(synced_at))
+
+    async def test_curriculum_only_does_not_bump_young_synced_at(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            snapshot_path = Path(temporary_dir) / SNAPSHOT_FILENAME
+            status_path = Path(temporary_dir) / "build-status.json"
+            previous_synced_at = "2026-09-14T08:00:00.000000+00:00"
+            self._write_snapshot(
+                snapshot_path,
+                item_name="cached snapshot",
+                young_synced_at=previous_synced_at,
+            )
+
+            async def curriculum_builder() -> None:
+                curriculum_store = SQLiteModelStore(snapshot_path, reset=False)
+                curriculum_store.close()
+
+            await _run_builders(
+                [("curriculum", curriculum_builder, (snapshot_path,))],
+                status_path=status_path,
+            )
+
+            refreshed = SQLiteModelStore(snapshot_path, reset=False)
+            try:
+                metadata = dict(
+                    refreshed.conn.execute("SELECT key, value FROM metadata")
+                )
+            finally:
+                refreshed.close()
+            self.assertEqual(
+                metadata["young_events_synced_at"],
+                previous_synced_at,
+            )
 
     async def test_fetch_failure_preserves_previous_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             build_dir = Path(temporary_dir)
             snapshot_path = build_dir / SNAPSHOT_FILENAME
-            self._write_snapshot(snapshot_path, item_name="usable snapshot")
+            previous_synced_at = "2026-09-14T08:00:00.000000+00:00"
+            self._write_snapshot(
+                snapshot_path,
+                item_name="usable snapshot",
+                young_synced_at=previous_synced_at,
+            )
             previous_bytes = snapshot_path.read_bytes()
             session = FakeYoungSession(
                 {
@@ -310,6 +372,17 @@ class YoungEventRefreshTest(unittest.IsolatedAsyncioTestCase):
                 await make_young_events()
 
             self.assertEqual(snapshot_path.read_bytes(), previous_bytes)
+            preserved = SQLiteModelStore(snapshot_path, reset=False)
+            try:
+                metadata = dict(
+                    preserved.conn.execute("SELECT key, value FROM metadata")
+                )
+            finally:
+                preserved.close()
+            self.assertEqual(
+                metadata["young_events_synced_at"],
+                previous_synced_at,
+            )
 
 
 if __name__ == "__main__":
