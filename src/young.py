@@ -24,16 +24,6 @@ YOUNG_ENDED_ENDPOINT = "/mobile/item/endList"
 YOUNG_ACTIVE_SOURCE = "young_mobile_item_enrolment_list"
 YOUNG_ENDED_SOURCE = "young_mobile_item_end_list"
 
-_OBSOLETE_YOUNG_METADATA_KEYS = (
-    "young_events_cache_source",
-    "young_active_refreshed",
-    "young_ended_refreshed",
-    "young_ended_cached_record_count",
-    "young_ended_probe_total",
-    "young_ended_probe_fetch_id",
-)
-_OBSOLETE_YOUNG_PROBE_SOURCE = "young_mobile_item_end_list_probe"
-
 logger = logging.getLogger(__name__)
 
 
@@ -91,17 +81,6 @@ def _validate_young_record_ids(records: list[dict[str, Any]], *, endpoint: str) 
                 f"Young endpoint {endpoint} returned duplicate event id {normalized_id}"
             )
         seen_ids.add(normalized_id)
-
-
-def _clear_obsolete_young_state(store: SQLiteModelStore) -> None:
-    # Older snapshots may contain the count-only ended probe. Remove its rows
-    # and metadata once the first complete refresh succeeds.
-    _delete_young_source(store, _OBSOLETE_YOUNG_PROBE_SOURCE)
-    placeholders = ", ".join("?" for _ in _OBSOLETE_YOUNG_METADATA_KEYS)
-    store.conn.execute(
-        f"DELETE FROM metadata WHERE key IN ({placeholders})",
-        _OBSOLETE_YOUNG_METADATA_KEYS,
-    )
 
 
 def _store_young_event_payload(
@@ -284,7 +263,6 @@ async def make_young_events() -> None:
                     page_size=YOUNG_PAGE_SIZE,
                 )
 
-            _clear_obsolete_young_state(store)
             _delete_young_source(store, YOUNG_ACTIVE_SOURCE)
             active_count = _store_young_event_payload(
                 store,
