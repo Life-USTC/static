@@ -1,0 +1,27 @@
+# Scope of the Blackboard anonymous guest-session crawl.
+#
+# Only courses that www.bb.ustc.edu.cn serves to its own `guest_login` session
+# belong here. The crawler submits no credentials: a course that answers with
+# the login shell, a 401/403 or "resource not found" is recorded as
+# auth_required and skipped, never retried with a username and password.
+base_url: https://www.bb.ustc.edu.cn
+
+# Politeness. One connection, one request at a time, with this delay between
+# requests; Retry-After is honoured on 429/5xx.
+request_delay_seconds: 1.5
+request_timeout_seconds: 60
+max_retries: 2
+
+# Per-course budgets, so a deep or mislabelled course cannot turn a daily
+# build into a crawl of the whole site.
+max_pages_per_course: 40
+max_resources_per_course: 60
+max_resource_bytes: 33554432 # 32 MiB
+
+courses:
+  # Content areas are discovered from each course menu. Set `content_ids` to
+  # pin a course to specific listings instead.
+  - id: _297_1
+    name: GPU并行计算和CUDA程序开发及优化
+  - id: _584_1
+    name: 国际金融（英）

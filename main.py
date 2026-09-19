@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
-from src import make_curriculum, make_rss, make_young_events
+from src import make_blackboard, make_curriculum, make_rss, make_young_events
 from src.sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME
 from tools.room_maps import build_room_maps
 from tools.upstream_schemas import export_upstream_schemas
@@ -91,6 +91,11 @@ def main() -> None:
         help="Generate Young event data",
     )
     parser.add_argument(
+        "--blackboard",
+        action="store_true",
+        help="Crawl public Blackboard course material through a guest session",
+    )
+    parser.add_argument(
         "--verify-upstream-contract",
         action="store_true",
         help="Fully refresh curriculum sources and verify upstream contracts",
@@ -113,11 +118,13 @@ def main() -> None:
         not args.rss
         and not args.curriculum
         and not args.young
+        and not args.blackboard
         and not args.verify_upstream_contract
     )
     run_rss = args.rss or run_all
     run_curriculum = args.curriculum or args.verify_upstream_contract or run_all
     run_young = args.young or run_all
+    run_blackboard = args.blackboard or run_all
 
     builders: list[tuple[str, Callable[[], Awaitable[None]], tuple[Path, ...]]] = []
     if run_rss:
@@ -140,6 +147,14 @@ def main() -> None:
         )
     if run_young:
         builders.append(("young", make_young_events, (build_dir / SNAPSHOT_FILENAME,)))
+    if run_blackboard:
+        builders.append(
+            (
+                "blackboard",
+                make_blackboard,
+                (build_dir / SNAPSHOT_FILENAME,),
+            )
+        )
 
     results = asyncio.run(
         _run_builders(builders, status_path=build_dir / "build-status.json")

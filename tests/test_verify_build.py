@@ -16,6 +16,7 @@ class BuildVerificationTest(unittest.TestCase):
                     "curriculum": {"status": "ok"},
                     "young": {"status": "failed"},
                     "rss": {"status": "ok"},
+                    "blackboard": {"status": "ok"},
                 },
             )
 
@@ -39,6 +40,7 @@ class BuildVerificationTest(unittest.TestCase):
                             "curriculum": {"status": "failed", "error": "Error"},
                             "young": {"status": "failed", "error": "Error"},
                             "rss": {"status": "ok"},
+                            "blackboard": {"status": "failed", "error": "Error"},
                         }
                     }
                 ),
