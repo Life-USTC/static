@@ -9,7 +9,7 @@ from typing import cast
 
 EXPECTED_SCHEMA_COUNT = 7
 OBSERVED_SCHEMA_COUNT = 5
-BUILDER_NAMES = ("curriculum", "young", "rss")
+BUILDER_NAMES = ("curriculum", "young", "rss", "blackboard")
 
 
 class BuildVerificationError(RuntimeError):
@@ -99,6 +99,10 @@ def _verify_builder_outputs(
         feeds = list((build_dir / "rss").glob("*.xml"))
         if not feeds or any(feed.stat().st_size == 0 for feed in feeds):
             raise BuildVerificationError("RSS builder reported success without feeds")
+    if builders["blackboard"]["status"] == "ok":
+        path = build_dir / "life-ustc-static.sqlite"
+        if not path.is_file():
+            raise BuildVerificationError(f"Missing Blackboard output: {path}")
 
 
 def _verify_room_maps(build_dir: Path) -> None:

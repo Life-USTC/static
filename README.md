@@ -9,7 +9,7 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 
 | 产物 | 内容 |
 |------|------|
-| `life-ustc-static.sqlite` | 规范化后的上游响应（课程 / 课表等） |
+| `life-ustc-static.sqlite` | 规范化后的上游响应（课程 / 课表 / Blackboard 公开课程资料索引等） |
 | `life-ustc-static-guesses.sqlite` | 无法直接从上游键出的推断关系 |
 | `schemas/upstream/*.expected.schema.json` | 从 Pydantic 生成的上游契约 |
 | `rss/` | 清洗后的校内新闻等 XML 订阅 |
@@ -29,11 +29,41 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 - **curriculum** — `catalog.ustc.edu.cn` 与教务课表相关上游 → SQLite
 - **young** — `young.ustc.edu.cn` 智慧团学活动 → 写入同一快照库
 - **rss** — 校主页新闻、教务处、应用通知等源 → XML；另含体教中心等爬取源
+- **blackboard** — `www.bb.ustc.edu.cn` 匿名访客会话可见的课程作业 / 实验 / 参考资料
+  → 写入同一快照库的 `blackboard_pages` 与 `blackboard_resources`
 
 Young 每次构建都会完整刷新进行中和已结束活动列表，并在分页不完整或上游请求失败时保留上一份可用快照。
 
 失败的 builder 会回滚该 builder 的旧产物；`build-status.json` 记录各 builder 状态。
 旧的 curriculum JSON 端点与 upstream response cache **已停发**。
+
+## Blackboard 公开课程资料
+
+抓取范围写在 `blackboard-config.yaml`；每门课程从 `launcher` 页读出课程菜单，再按
+content area 递归 listContent，因此新增课程只需写一个 course id。
+
+会话用的是站点自己的匿名入口
+`GET /webapps/login?action=guest_login&new_loc=%2Fwebapps%2Fblackboard%2Fexecute%2Flauncher%3Ftype%3DCourse%26id%3D<course_id>`，
+全程同一个 HTTP 客户端、跟随跳转、保留 cookie。**不提交用户名和密码**，
+`access_mode` 恒为 `guest_session`。
+
+`blackboard_resources` 每行记录请求 URL、最终 URL、状态码、MIME、文件名、字节数、
+SHA-256、本地路径、来源页面和分类（`homework` / `lab` / `answer` / `report` /
+`slides` / `reference` / `other`）。文件本体只落在 git 忽略、**不发布**到 Pages 的
+`.artifacts/blackboard/files/<sha256>` 下（按内容寻址去重）；快照里发布的是元数据索引，
+不转载课程文件。带上一次的 `ETag` / `Last-Modified` 做条件请求，304 时沿用已记录的
+SHA-256 与大小，不重复下载。
+
+`blackboard_pages` 只把有条目的 listContent 页标成 `indexed = 1`。登录壳页
+（`page_kind = login`）、正文哈希重复的页面（`duplicate`）、无条目的导航页
+（`navigation`）和「找不到资源」（`not_found`）都记录但不进正文索引。
+
+### 边界
+
+只抓匿名访客本来就能看到的内容。返回 401/403、跳到 `/webapps/login`、或正文是登录表单
+的资源一律记为 `access_state = "auth_required"` 并跳过，不重试、不提交凭据、不绕过任何
+权限控制。礼貌性约束同样写在配置里：单连接、请求间隔 1.5 秒、遵守 `Retry-After`、
+User-Agent 标明项目地址，并有每课程页数 / 资源数 / 单文件大小上限。
 
 ## 给贡献者
 
