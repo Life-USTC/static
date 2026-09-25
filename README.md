@@ -70,10 +70,38 @@ User-Agent 标明项目地址，并有每课程页数 / 资源数 / 单文件大
 日更由 GitHub Actions（`build.yml`）驱动。本地与测试约定见仓库内 `tests/` 与
 `pyproject.toml`；本 README 只描述产物语义。
 
+课程采集覆盖学校学期列表中的全部学期，不按年份截断课程或考试。已结束学期的
+课程与课表、考试分别缓存，只有对应来源完整、每份响应未满 30 天时才复用；未结束
+学期每次刷新。缺少考试缓存的旧学期会补抓考试，无需重复抓取仍新鲜的课程和课表。
+每次最多并行抓取三个学期。课程列表限时 60 秒，超时或 502/504 时，将该学期声明为
+`curriculum_unavailable_semester_ids`，移除其课程、课表和猜测的局部数据，并仅保留真实
+失败来源的 `ok=0` 记录；教务课表在既有有限重试耗尽后采用同样规则。服务端应保留这些
+学期的生产数据，下一次构建重新尝试。类型校验失败、空响应或返回教学班 ID 与请求
+不一致仍会中止整个更新，保留此前产物。
+
+考试接口每学期限时 60 秒。超时或 502/504 会记录失败的 `upstream_fetches`（`ok=0`），
+并在 `catalog_exam_unavailable_semester_ids` 中列出，下次运行继续重试。这些学期的考试
+不可用于覆盖或删除生产记录；只有成功响应（包括空列表）才有权威性。其他 HTTP 错误、
+非 JSON 或类型校验失败仍中止更新。`curriculum_fetch_status=partial_sources_unavailable` 明确表示
+部分来源不可用，不等同于全部来源成功。成功与不可用的学期范围必须完整覆盖学校列表，
+每个不可用声明必须对应明确失败记录。
+
+`upstream_fetches.fetched_at` 保留每个来源的实际抓取时间。metadata 的
+`selected_semester_ids`、`refreshed_semester_ids`、`cached_ended_semester_ids` 描述课程与
+课表范围；`catalog_exam_refreshed_semester_ids`、`catalog_exam_cached_semester_ids` 与
+`catalog_exam_successful_semester_ids` 分别描述考试请求、缓存和可用范围。
+`curriculum_successful_semester_ids` 列出课程与课表都完整的范围。
+课程与考试的最小学期 ID 均为 1，`generated_at` 为此次产物完成组装的时间。
+
+SQLite schema 6 始终包含 `jw_room_types`（可为空）。课表中的教室对象提供常见类型，
+教学班仅提供 `roomTypeId`；缺少描述的引用从教务 lesson-search 的真实 `roomType` 对象
+补齐，保留学期和 fetch provenance。补充字典每次构建重新抓取，只访问仍缺类型的学期；
+分页不完整、类型冲突或仍有未解析引用会阻止发布。该表只存类型描述，不保存查询账号路径。
+
 本地执行 `uv run python main.py --curriculum` 会在 Pydantic validation 前累计原始
 JSON，并在替换 SQLite 和 expected schema 前完成契约检查。Observed schemas 与 report
 只写入被 git 忽略、不会发布到 Pages 的 `.artifacts/upstream-contracts/`。使用
-`uv run python main.py --verify-upstream-contract` 可强制刷新所有 selected semesters，
+`uv run python main.py --verify-upstream-contract` 可强制刷新学校列出的所有学期，
 获得完整的本地 fetch-context coverage。
 
 上游新增字段、缺失 required 字段和类型不兼容会使 builder 失败。有完整 context

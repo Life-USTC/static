@@ -9,7 +9,7 @@ from typing import Union, get_args, get_origin
 
 from pydantic import BaseModel, RootModel
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SNAPSHOT_FILENAME = "life-ustc-static.sqlite"
 GUESSES_FILENAME = "life-ustc-static-guesses.sqlite"
 
@@ -122,6 +122,16 @@ class SQLiteModelStore:
                 ok INTEGER NOT NULL,
                 error TEXT,
                 fetched_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS jw_room_types (
+                id INTEGER NOT NULL,
+                semester_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                nameZh TEXT NOT NULL,
+                nameEn TEXT,
+                fetch_id INTEGER NOT NULL REFERENCES upstream_fetches(id),
+                PRIMARY KEY (id, semester_id)
             );
             """
         )

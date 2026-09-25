@@ -96,7 +96,7 @@ async def get_departments(session: RequestSession) -> list[Department]:
 
 async def fetch_courses_json(session: RequestSession, semester_id: str) -> list[dict]:
     url = "https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach/" + semester_id
-    return await session.get_json(url=url)
+    return await session.get_json(url=url, timeout=60_000, transient_retries=0)
 
 
 def parse_courses(payload: list[dict]) -> list[Course]:

@@ -1,30 +1,39 @@
+import asyncio
 import unittest
+from datetime import UTC, datetime
 from json import JSONDecodeError
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
 from src.curriculum import (
-    _cached_complete_semester_ids,
+    ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS,
+    _cached_fresh_exam_semester_ids,
+    _cached_fresh_lesson_semester_ids,
+    _collect_semesters,
     _course_ids_by_code_from_response,
     _curriculum_semesters_to_refresh,
     _has_cached_jw_schedule,
-    _is_skippable_exam_fetch_error,
     _jw_schedule_expected_chunk_count_key,
     _refresh_curriculum_semesters,
-    _selected_curriculum_semesters,
+    _register_upstream_tables,
     _semester_has_ended,
-    _should_fetch_catalog_exams,
-    _should_fetch_catalog_lessons,
-    _should_fetch_jw_schedule_table,
+    _store_catalog_exams,
+    _store_catalog_semesters,
     _store_jw_schedule_chunks,
+    _store_semester,
     _stored_course_ids_by_code,
+    make_curriculum,
 )
 from src.models.api.catalog_api_teach_lesson_list_for_teach import (
     Course,
     TeachLessonListItem,
     TeachLessonListResponse,
 )
+from src.models.api.jw_ws_schedule_table_datum import LessonListItem
 from src.models.semester import Semester
 from src.observed_contracts import ObservedContractCollector
 from src.sqlite_store import SQLiteModelStore
@@ -187,34 +196,16 @@ class CatalogCourseIdentityTest(unittest.TestCase):
             store.close()
 
 
-class CatalogLessonFetchTest(unittest.TestCase):
-    def test_skips_semesters_below_minimum_lesson_id(self) -> None:
-        self.assertFalse(_should_fetch_catalog_lessons("53"))
-        self.assertFalse(_should_fetch_catalog_lessons("202"))
-
-    def test_fetches_semesters_at_or_above_minimum_lesson_id(self) -> None:
-        self.assertTrue(_should_fetch_catalog_lessons("221"))
-        self.assertTrue(_should_fetch_catalog_lessons("381"))
-
-    def test_fetches_non_numeric_semester_ids(self) -> None:
-        self.assertTrue(_should_fetch_catalog_lessons("latest"))
-
-    def test_selected_curriculum_semesters_filter_legacy_ids(self) -> None:
-        selected = _selected_curriculum_semesters(
-            [_semester("202"), _semester("221"), _semester("381")]
-        )
-
-        self.assertEqual([semester.id for semester in selected], ["221", "381"])
-
-
-class JwScheduleFetchTest(unittest.TestCase):
-    def test_fetches_schedule_for_any_selected_semester_id(self) -> None:
-        self.assertTrue(_should_fetch_jw_schedule_table("2"))
-        self.assertTrue(_should_fetch_jw_schedule_table("81"))
-        self.assertTrue(_should_fetch_jw_schedule_table("221"))
-
-    def test_fetches_schedule_for_non_numeric_semester_ids(self) -> None:
-        self.assertTrue(_should_fetch_jw_schedule_table("latest"))
+def _jw_payload(ids: list[int]) -> dict:
+    return {
+        "result": {
+            "lessonList": [
+                dict.fromkeys(LessonListItem.model_fields) | {"id": i} for i in ids
+            ],
+            "scheduleList": [],
+            "scheduleGroupList": [],
+        }
+    }
 
 
 class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
@@ -242,7 +233,7 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
             with patch(
                 "src.curriculum.fetch_jw_schedule_table_json",
                 new_callable=AsyncMock,
-                return_value={"result": None},
+                side_effect=[_jw_payload(list(range(100))), _jw_payload([100])],
             ):
                 await _store_jw_schedule_chunks(
                     session=MagicMock(),
@@ -251,7 +242,7 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
                     contracts=ObservedContractCollector(),
                     semester_id="401",
                     catalog_response=TeachLessonListResponse(root=[]),
-                    courses=[MagicMock() for _ in range(101)],
+                    courses=[SimpleNamespace(id=i) for i in range(101)],
                 )
 
             metadata_key = _jw_schedule_expected_chunk_count_key("401")
@@ -299,7 +290,7 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
                     "src.curriculum.fetch_jw_schedule_table_json",
                     new_callable=AsyncMock,
                     side_effect=[
-                        {"result": None},
+                        _jw_payload(list(range(100))),
                         JSONDecodeError("non-json", "<html>", 0),
                     ],
                 ),
@@ -312,7 +303,7 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
                     contracts=ObservedContractCollector(),
                     semester_id="401",
                     catalog_response=TeachLessonListResponse(root=[]),
-                    courses=[MagicMock() for _ in range(101)],
+                    courses=[SimpleNamespace(id=i) for i in range(101)],
                 )
 
             complete = _has_cached_jw_schedule(store, "401")
@@ -322,43 +313,365 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(complete)
 
 
-class CatalogExamFetchTest(unittest.TestCase):
-    def test_skips_structured_bad_gateway_errors(self) -> None:
+class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fetches_pre_2021_spring_and_summer_including_empty_lists(self):
+        for semester_id in ("53", "201", "202"):
+            with self.subTest(semester_id=semester_id):
+                store = SQLiteModelStore(":memory:")
+                _register_upstream_tables(store)
+                try:
+                    with (
+                        patch(
+                            "src.curriculum.fetch_courses_json",
+                            new_callable=AsyncMock,
+                            return_value=[],
+                        ) as lessons,
+                        patch(
+                            "src.curriculum.fetch_exams_json",
+                            new_callable=AsyncMock,
+                            return_value=[],
+                        ) as exams,
+                        patch(
+                            "src.curriculum.fetch_jw_schedule_table_json",
+                            new_callable=AsyncMock,
+                        ) as jw,
+                    ):
+                        await _store_semester(
+                            session=MagicMock(),
+                            store=store,
+                            guesses=MagicMock(),
+                            contracts=ObservedContractCollector(),
+                            semester_id=semester_id,
+                            previous_course_ids_by_code={},
+                        )
+                        await _store_catalog_exams(
+                            session=MagicMock(),
+                            store=store,
+                            contracts=ObservedContractCollector(),
+                            semester_id=semester_id,
+                        )
+                    self.assertEqual(
+                        lessons.await_args.kwargs["semester_id"], semester_id
+                    )
+                    self.assertEqual(
+                        exams.await_args.kwargs["semester_id"], semester_id
+                    )
+                    jw.assert_not_awaited()
+                    self.assertEqual(
+                        _cached_fresh_lesson_semester_ids(
+                            store,
+                            [_semester(semester_id)],
+                            now_timestamp=datetime.now(UTC).timestamp(),
+                        ),
+                        {semester_id},
+                    )
+                finally:
+                    store.close()
+
+    async def test_rejects_empty_or_invalid_semester_inventory(self):
+        for payload in (
+            None,
+            [],
+            [
+                {
+                    "id": None,
+                    "nameZh": None,
+                    "code": None,
+                    "start": None,
+                    "end": None,
+                    "isLast": None,
+                }
+            ],
+        ):
+            store = SQLiteModelStore(":memory:")
+            try:
+                with (
+                    patch(
+                        "src.curriculum.fetch_semesters_json",
+                        AsyncMock(return_value=payload),
+                    ),
+                    self.assertRaises(ValueError),
+                ):
+                    await _store_catalog_semesters(
+                        MagicMock(), store, ObservedContractCollector()
+                    )
+                self.assertEqual(
+                    store.conn.execute(
+                        "SELECT COUNT(*) FROM upstream_fetches"
+                    ).fetchone()[0],
+                    0,
+                )
+            finally:
+                store.close()
+
+    async def test_failed_jw_chunk_removes_partial_semester_and_can_retry(self):
+        store = SQLiteModelStore(":memory:")
+        _register_upstream_tables(store)
+        guesses = MagicMock()
+        payload = [
+            _catalog_lesson(i, course_id=10, course_code="A").model_dump()
+            for i in range(1, 102)
+        ]
+        try:
+            with (
+                patch(
+                    "src.curriculum.fetch_courses_json", AsyncMock(return_value=payload)
+                ),
+                patch(
+                    "src.curriculum.fetch_jw_schedule_table_json",
+                    AsyncMock(
+                        side_effect=[
+                            _jw_payload(list(range(1, 101))),
+                            httpx.ReadTimeout("timed out"),
+                        ]
+                    ),
+                ),
+            ):
+                await _store_semester(
+                    session=MagicMock(),
+                    store=store,
+                    guesses=guesses,
+                    contracts=ObservedContractCollector(),
+                    semester_id="201",
+                    previous_course_ids_by_code={},
+                )
+            self.assertEqual(
+                store.conn.execute(
+                    "SELECT source,ok,context FROM upstream_fetches"
+                ).fetchall(),
+                [("jw_ws_schedule_table_datum", 0, "semester_id=201")],
+            )
+            self.assertEqual(
+                store.conn.execute(
+                    "SELECT COUNT(*) FROM catalog_teach_lesson_list_for_teach"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                store.conn.execute(
+                    "SELECT COUNT(*) FROM jw_ws_schedule_table_datum_result_lessonList"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertFalse(_has_cached_jw_schedule(store, "201"))
+            with patch("src.curriculum.fetch_courses_json", AsyncMock(return_value=[])):
+                await _store_semester(
+                    session=MagicMock(),
+                    store=store,
+                    guesses=guesses,
+                    contracts=ObservedContractCollector(),
+                    semester_id="201",
+                    previous_course_ids_by_code={},
+                )
+            self.assertEqual(
+                _cached_fresh_lesson_semester_ids(
+                    store,
+                    [_semester("201")],
+                    now_timestamp=datetime.now(UTC).timestamp(),
+                ),
+                {"201"},
+            )
+            self.assertEqual(
+                store.conn.execute(
+                    "SELECT COUNT(*) FROM upstream_fetches WHERE ok=0"
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            store.close()
+
+    async def test_unavailable_exams_are_recorded_as_failed_not_empty(self):
         request = httpx.Request(
-            "GET", "https://catalog.ustc.edu.cn/api/teach/exam/list/401"
+            "GET", "https://catalog.ustc.edu.cn/api/teach/exam/list/201"
         )
-        for status_code in (502, 504):
-            response = httpx.Response(status_code, request=request)
-            error = httpx.HTTPStatusError(
+        for error in (
+            httpx.ReadTimeout("timed out"),
+            httpx.HTTPStatusError(
                 "Bad Gateway",
                 request=request,
-                response=response,
+                response=httpx.Response(502, request=request),
+            ),
+        ):
+            store = SQLiteModelStore(":memory:")
+            try:
+                with patch(
+                    "src.curriculum.fetch_exams_json", AsyncMock(side_effect=error)
+                ):
+                    await _store_catalog_exams(
+                        session=MagicMock(),
+                        store=store,
+                        contracts=ObservedContractCollector(),
+                        semester_id="201",
+                    )
+                self.assertEqual(
+                    store.conn.execute("SELECT ok FROM upstream_fetches").fetchall(),
+                    [(0,)],
+                )
+                self.assertEqual(
+                    _cached_fresh_exam_semester_ids(
+                        store,
+                        [_semester("201")],
+                        now_timestamp=datetime.now(UTC).timestamp(),
+                    ),
+                    set(),
+                )
+            finally:
+                store.close()
+
+    async def test_invalid_exam_response_still_aborts(self):
+        store = SQLiteModelStore(":memory:")
+        try:
+            with (
+                patch("src.curriculum.fetch_exams_json", AsyncMock(return_value=None)),
+                self.assertRaises(ValueError),
+            ):
+                await _store_catalog_exams(
+                    session=MagicMock(),
+                    store=store,
+                    contracts=ObservedContractCollector(),
+                    semester_id="201",
+                )
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM upstream_fetches").fetchone()[
+                    0
+                ],
+                0,
             )
-            self.assertTrue(_is_skippable_exam_fetch_error(error))
+        finally:
+            store.close()
 
-    def test_does_not_skip_other_structured_http_errors(self) -> None:
-        request = httpx.Request(
-            "GET", "https://catalog.ustc.edu.cn/api/teach/exam/list/401"
-        )
-        response = httpx.Response(500, request=request)
-        error = httpx.HTTPStatusError(
-            "Server Error",
-            request=request,
-            response=response,
-        )
+    async def test_rejects_incomplete_or_wrong_jw_lesson_ids(self):
+        for payload in (
+            {"result": None},
+            _jw_payload([]),
+            _jw_payload([2]),
+            _jw_payload([1, 1]),
+        ):
+            store = SQLiteModelStore(":memory:")
+            try:
+                with (
+                    patch(
+                        "src.curriculum.fetch_jw_schedule_table_json",
+                        AsyncMock(return_value=payload),
+                    ),
+                    self.assertRaises(ValueError),
+                ):
+                    await _store_jw_schedule_chunks(
+                        session=MagicMock(),
+                        store=store,
+                        guesses=MagicMock(),
+                        contracts=ObservedContractCollector(),
+                        semester_id="201",
+                        catalog_response=TeachLessonListResponse(root=[]),
+                        courses=[SimpleNamespace(id=1)],
+                    )
+                self.assertFalse(_has_cached_jw_schedule(store, "201"))
+            finally:
+                store.close()
 
-        self.assertFalse(_is_skippable_exam_fetch_error(error))
 
-    def test_skips_semesters_below_minimum_exam_id(self) -> None:
-        self.assertFalse(_should_fetch_catalog_exams("221"))
-        self.assertFalse(_should_fetch_catalog_exams("362"))
+class CurriculumRefreshTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fatal_collection_cancels_requests_before_rollback(self):
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
 
-    def test_fetches_semesters_at_or_above_minimum_exam_id(self) -> None:
-        self.assertTrue(_should_fetch_catalog_exams("381"))
-        self.assertTrue(_should_fetch_catalog_exams("401"))
+        async def collect(semester):
+            if semester.id == "1":
+                await started.wait()
+                raise ValueError("incompatible response")
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
 
-    def test_fetches_non_numeric_semester_ids(self) -> None:
-        self.assertTrue(_should_fetch_catalog_exams("latest"))
+        with self.assertRaises(ExceptionGroup):
+            await _collect_semesters(
+                [_semester("1"), _semester("2")], collect, description="test"
+            )
+        self.assertTrue(cancelled.is_set())
+
+    async def test_retries_failed_exams_without_refetching_fresh_lesson_cache(self):
+        semesters = [
+            dict(
+                id=i,
+                nameZh=f"semester {i}",
+                code=str(i),
+                start="2021-01-01",
+                end="2021-07-01",
+                isLast=False,
+            )
+            for i in (53, 201, 202)
+        ]
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                patch("src.curriculum.BUILD_DIR", root),
+                patch("src.curriculum.BASE_DIR", root),
+                patch("src.curriculum.USTCSession"),
+                patch(
+                    "src.curriculum.fetch_semesters_json",
+                    AsyncMock(return_value=semesters),
+                ),
+                patch(
+                    "src.curriculum.fetch_departments_json", AsyncMock(return_value=[])
+                ),
+                patch(
+                    "src.curriculum.fetch_courses_json", AsyncMock(return_value=[])
+                ) as lessons,
+                patch(
+                    "src.curriculum.fetch_exams_json",
+                    AsyncMock(side_effect=[[], httpx.ReadTimeout("timed out"), []]),
+                ) as exams,
+                patch("src.curriculum.publish_contract_artifacts", return_value=[]),
+            ):
+                await make_curriculum()
+                store = SQLiteModelStore(root / "life-ustc-static.sqlite", reset=False)
+                try:
+                    metadata = dict(
+                        store.conn.execute("SELECT key, value FROM metadata")
+                    )
+                    self.assertEqual(metadata["selected_semester_ids"], "53,201,202")
+                    self.assertEqual(
+                        metadata["catalog_exam_unavailable_semester_ids"], "201"
+                    )
+                    self.assertEqual(
+                        metadata["catalog_exam_successful_semester_ids"], "53,202"
+                    )
+                    self.assertEqual(
+                        metadata["curriculum_fetch_status"],
+                        "partial_sources_unavailable",
+                    )
+                finally:
+                    store.close()
+                lessons.reset_mock()
+                exams.reset_mock(side_effect=True)
+                exams.return_value = []
+                await make_curriculum()
+                lessons.assert_not_awaited()
+                self.assertEqual(exams.await_count, 1)
+                self.assertEqual(exams.await_args.kwargs["semester_id"], "201")
+                store = SQLiteModelStore(root / "life-ustc-static.sqlite", reset=False)
+                try:
+                    metadata = dict(
+                        store.conn.execute("SELECT key, value FROM metadata")
+                    )
+                    self.assertEqual(
+                        metadata["catalog_exam_unavailable_semester_ids"], ""
+                    )
+                    self.assertEqual(
+                        metadata["catalog_exam_refreshed_semester_ids"], "201"
+                    )
+                    self.assertEqual(metadata["refreshed_semester_ids"], "")
+                    self.assertEqual(metadata["curriculum_fetch_status"], "complete")
+                    self.assertEqual(
+                        store.conn.execute(
+                            "SELECT COUNT(*) FROM upstream_fetches WHERE ok=0"
+                        ).fetchone()[0],
+                        0,
+                    )
+                finally:
+                    store.close()
 
 
 class SemesterCacheTest(unittest.TestCase):
@@ -398,7 +711,7 @@ class SemesterCacheTest(unittest.TestCase):
 
         self.assertEqual(refreshed, semesters)
 
-    def test_cached_complete_semester_ids_require_lesson_jw_and_exam_when_needed(
+    def test_cached_fresh_lesson_semester_ids_require_lesson_jw_and_exam_when_needed(
         self,
     ) -> None:
         store = SQLiteModelStore(":memory:")
@@ -464,7 +777,7 @@ class SemesterCacheTest(unittest.TestCase):
                     {_jw_schedule_expected_chunk_count_key(semester_id): 1}
                 )
 
-            cached = _cached_complete_semester_ids(
+            cached = _cached_fresh_lesson_semester_ids(
                 store,
                 [
                     _semester("221"),
@@ -472,10 +785,89 @@ class SemesterCacheTest(unittest.TestCase):
                     _semester("401"),
                     _semester("421"),
                 ],
+                now_timestamp=datetime.now(UTC).timestamp(),
             )
 
-            self.assertEqual(cached, {"221", "401"})
+            self.assertEqual(cached, {"221", "381", "401"})
+            self.assertEqual(
+                _cached_fresh_exam_semester_ids(
+                    store,
+                    [_semester("221"), _semester("381"), _semester("401")],
+                    now_timestamp=datetime.now(UTC).timestamp(),
+                ),
+                {"401"},
+            )
             self.assertIsInstance(lesson_221, int)
+        finally:
+            store.close()
+
+    def test_stale_exam_refreshes_independently_of_fresh_catalog_and_schedule(self):
+        now = datetime.now(UTC).timestamp()
+        store = SQLiteModelStore(":memory:")
+        try:
+            for source in (
+                "catalog_teach_lesson_list_for_teach",
+                "catalog_teach_exam_list",
+                "jw_ws_schedule_table_datum",
+            ):
+                context = {"semester_id": "201"}
+                if source == "jw_ws_schedule_table_datum":
+                    context["chunk_index"] = 0
+                store.record_fetch(
+                    source=source, method="GET", url="test", context=context
+                )
+            store.put_metadata({_jw_schedule_expected_chunk_count_key("201"): 1})
+            store.conn.execute(
+                "UPDATE upstream_fetches SET fetched_at=?",
+                (datetime.fromtimestamp(now - 1, UTC).isoformat(),),
+            )
+            semesters = [_semester("201", end_date=1)]
+            self.assertEqual(
+                _cached_fresh_exam_semester_ids(store, semesters, now_timestamp=now),
+                {"201"},
+            )
+            store.conn.execute(
+                "UPDATE upstream_fetches SET fetched_at=? "
+                "WHERE source='catalog_teach_exam_list'",
+                (
+                    datetime.fromtimestamp(
+                        now - ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS, UTC
+                    ).isoformat(),
+                ),
+            )
+            cached_lessons = _cached_fresh_lesson_semester_ids(
+                store, semesters, now_timestamp=now
+            )
+            cached_exams = _cached_fresh_exam_semester_ids(
+                store, semesters, now_timestamp=now
+            )
+            self.assertEqual(cached_lessons, {"201"})
+            self.assertEqual(cached_exams, set())
+            self.assertEqual(
+                _refresh_curriculum_semesters(
+                    semesters, cached_semester_ids=cached_lessons, now_timestamp=now
+                ),
+                [],
+            )
+            self.assertEqual(
+                _refresh_curriculum_semesters(
+                    semesters, cached_semester_ids=cached_exams, now_timestamp=now
+                ),
+                semesters,
+            )
+            store.conn.execute(
+                "UPDATE upstream_fetches SET fetched_at=? "
+                "WHERE source='jw_ws_schedule_table_datum'",
+                (
+                    datetime.fromtimestamp(
+                        now - ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS, UTC
+                    ).isoformat(),
+                ),
+            )
+            self.assertEqual(
+                _cached_fresh_lesson_semester_ids(store, semesters, now_timestamp=now),
+                set(),
+            )
         finally:
             store.close()
 
