@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from datetime import UTC, datetime
 from json import JSONDecodeError
@@ -12,6 +13,7 @@ from src.curriculum import (
     ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS,
     _cached_fresh_exam_semester_ids,
     _cached_fresh_lesson_semester_ids,
+    _collect_semesters,
     _course_ids_by_code_from_response,
     _curriculum_semesters_to_refresh,
     _has_cached_jw_schedule,
@@ -402,6 +404,82 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 store.close()
 
+    async def test_failed_jw_chunk_removes_partial_semester_and_can_retry(self):
+        store = SQLiteModelStore(":memory:")
+        _register_upstream_tables(store)
+        guesses = MagicMock()
+        payload = [
+            _catalog_lesson(i, course_id=10, course_code="A").model_dump()
+            for i in range(1, 102)
+        ]
+        try:
+            with (
+                patch(
+                    "src.curriculum.fetch_courses_json", AsyncMock(return_value=payload)
+                ),
+                patch(
+                    "src.curriculum.fetch_jw_schedule_table_json",
+                    AsyncMock(
+                        side_effect=[
+                            _jw_payload(list(range(1, 101))),
+                            httpx.ReadTimeout("timed out"),
+                        ]
+                    ),
+                ),
+            ):
+                await _store_semester(
+                    session=MagicMock(),
+                    store=store,
+                    guesses=guesses,
+                    contracts=ObservedContractCollector(),
+                    semester_id="201",
+                    previous_course_ids_by_code={},
+                )
+            self.assertEqual(
+                store.conn.execute(
+                    "SELECT source,ok,context FROM upstream_fetches"
+                ).fetchall(),
+                [("jw_ws_schedule_table_datum", 0, "semester_id=201")],
+            )
+            self.assertEqual(
+                store.conn.execute(
+                    "SELECT COUNT(*) FROM catalog_teach_lesson_list_for_teach"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                store.conn.execute(
+                    "SELECT COUNT(*) FROM jw_ws_schedule_table_datum_result_lessonList"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertFalse(_has_cached_jw_schedule(store, "201"))
+            with patch("src.curriculum.fetch_courses_json", AsyncMock(return_value=[])):
+                await _store_semester(
+                    session=MagicMock(),
+                    store=store,
+                    guesses=guesses,
+                    contracts=ObservedContractCollector(),
+                    semester_id="201",
+                    previous_course_ids_by_code={},
+                )
+            self.assertEqual(
+                _cached_fresh_lesson_semester_ids(
+                    store,
+                    [_semester("201")],
+                    now_timestamp=datetime.now(UTC).timestamp(),
+                ),
+                {"201"},
+            )
+            self.assertEqual(
+                store.conn.execute(
+                    "SELECT COUNT(*) FROM upstream_fetches WHERE ok=0"
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            store.close()
+
     async def test_unavailable_exams_are_recorded_as_failed_not_empty(self):
         request = httpx.Request(
             "GET", "https://catalog.ustc.edu.cn/api/teach/exam/list/201"
@@ -493,6 +571,26 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CurriculumRefreshTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fatal_collection_cancels_requests_before_rollback(self):
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def collect(semester):
+            if semester.id == "1":
+                await started.wait()
+                raise ValueError("incompatible response")
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with self.assertRaises(ExceptionGroup):
+            await _collect_semesters(
+                [_semester("1"), _semester("2")], collect, description="test"
+            )
+        self.assertTrue(cancelled.is_set())
+
     async def test_retries_failed_exams_without_refetching_fresh_lesson_cache(self):
         semesters = [
             dict(
@@ -541,7 +639,8 @@ class CurriculumRefreshTest(unittest.IsolatedAsyncioTestCase):
                         metadata["catalog_exam_successful_semester_ids"], "53,202"
                     )
                     self.assertEqual(
-                        metadata["curriculum_fetch_status"], "exams_unavailable"
+                        metadata["curriculum_fetch_status"],
+                        "partial_sources_unavailable",
                     )
                 finally:
                     store.close()

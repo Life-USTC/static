@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import time
-from datetime import datetime
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from json import JSONDecodeError
 
 import httpx
@@ -56,6 +58,7 @@ CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
 JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
 ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 CATALOG_EXAM_TIMEOUT_MS = 60_000
+CURRICULUM_FETCH_CONCURRENCY = 3
 JW_SCHEDULE_CHUNK_SIZE = 100
 JW_SCHEDULE_EXPECTED_CHUNK_COUNT_KEY_PREFIX = "jw_schedule_expected_chunk_count_"
 CATALOG_LESSON_TABLE = "catalog_teach_lesson_list_for_teach"
@@ -697,6 +700,43 @@ async def _store_jw_schedule_chunks(
     )
 
 
+def _record_unavailable_curriculum(
+    store: SQLiteModelStore,
+    guesses: SQLiteGuessStore,
+    semester_id: str,
+    *,
+    source: str,
+    error: Exception,
+) -> None:
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code not in {
+        502,
+        504,
+    }:
+        raise error
+    _delete_cached_semester(store, guesses, semester_id)
+    store.conn.execute(
+        "DELETE FROM metadata WHERE key = ?",
+        (_jw_schedule_expected_chunk_count_key(semester_id),),
+    )
+    is_catalog = source == "catalog_teach_lesson_list_for_teach"
+    store.record_fetch(
+        source=source,
+        method="GET" if is_catalog else "POST",
+        url=f"{CATALOG_LESSON_URL_PREFIX}/{semester_id}"
+        if is_catalog
+        else JW_SCHEDULE_TABLE_URL,
+        context={"semester_id": semester_id},
+        ok=False,
+        error=f"{type(error).__name__}: {error}",
+    )
+    logger.warning(
+        "Curriculum unavailable for semester %s (%s): %s",
+        semester_id,
+        source,
+        type(error).__name__,
+    )
+
+
 async def _store_semester(
     *,
     session: RequestSession,
@@ -706,7 +746,17 @@ async def _store_semester(
     semester_id: str,
     previous_course_ids_by_code: dict[str, int],
 ) -> None:
-    payload = await fetch_courses_json(session=session, semester_id=semester_id)
+    try:
+        payload = await fetch_courses_json(session=session, semester_id=semester_id)
+    except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+        _record_unavailable_curriculum(
+            store,
+            guesses,
+            semester_id,
+            source="catalog_teach_lesson_list_for_teach",
+            error=error,
+        )
+        return
     contracts.observe_and_assert_compatible(
         CATALOG_LESSONS,
         payload,
@@ -734,15 +784,46 @@ async def _store_semester(
     logger.info("Stored %s catalog lessons for semester %s", lesson_count, semester_id)
 
     courses = parse_courses(payload)
-    await _store_jw_schedule_chunks(
-        session=session,
-        store=store,
-        guesses=guesses,
-        contracts=contracts,
-        semester_id=semester_id,
-        catalog_response=catalog_response,
-        courses=courses,
-    )
+    try:
+        await _store_jw_schedule_chunks(
+            session=session,
+            store=store,
+            guesses=guesses,
+            contracts=contracts,
+            semester_id=semester_id,
+            catalog_response=catalog_response,
+            courses=courses,
+        )
+    except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+        _record_unavailable_curriculum(
+            store,
+            guesses,
+            semester_id,
+            source="jw_ws_schedule_table_datum",
+            error=error,
+        )
+
+
+async def _collect_semesters(
+    semesters: list[Semester],
+    collect: Callable[[Semester], Awaitable[None]],
+    *,
+    description: str,
+) -> None:
+    semaphore = asyncio.Semaphore(CURRICULUM_FETCH_CONCURRENCY)
+    with tqdm(
+        total=len(semesters), position=1, leave=True, desc=description
+    ) as progress:
+
+        async def collect_one(semester: Semester) -> None:
+            async with semaphore:
+                await collect(semester)
+                progress.update(1)
+
+        # Drain cancelled requests before a fatal error rolls back SQLite.
+        async with asyncio.TaskGroup() as tasks:
+            for semester in semesters:
+                tasks.create_task(collect_one(semester))
 
 
 async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
@@ -871,12 +952,7 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
                 len(cached_ended_semester_ids),
             )
 
-            for semester in tqdm(
-                refreshed_semesters,
-                position=1,
-                leave=True,
-                desc="Processing semesters",
-            ):
+            async def collect_curriculum(semester: Semester) -> None:
                 await _store_semester(
                     session=session,
                     store=store,
@@ -885,26 +961,43 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
                     semester_id=str(semester.id),
                     previous_course_ids_by_code=previous_course_ids_by_code,
                 )
+
+            await _collect_semesters(
+                refreshed_semesters,
+                collect_curriculum,
+                description="Processing semesters",
+            )
             _stored_course_ids_by_code(store)
             complete_ids = _cached_fresh_lesson_semester_ids(
                 store, selected_semesters, now_timestamp=time.time()
             )
-            if complete_ids != {str(semester.id) for semester in selected_semesters}:
-                raise RuntimeError(
-                    "Curriculum snapshot contains incomplete or stale semesters"
+            unavailable_ids = {
+                _fetch_context_values(context)["semester_id"]
+                for (context,) in store.conn.execute(
+                    "SELECT context FROM upstream_fetches WHERE ok = 0 "
+                    "AND source IN ('catalog_teach_lesson_list_for_teach', "
+                    "'jw_ws_schedule_table_datum')"
                 )
-            for semester in tqdm(
-                refreshed_exam_semesters,
-                position=1,
-                leave=True,
-                desc="Processing exams",
+            }
+            if (
+                unavailable_ids
+                != {str(semester.id) for semester in selected_semesters} - complete_ids
             ):
+                raise RuntimeError(
+                    "Curriculum missing explicit success/failure provenance"
+                )
+
+            async def collect_exams(semester: Semester) -> None:
                 await _store_catalog_exams(
                     session=session,
                     store=store,
                     contracts=contracts,
                     semester_id=str(semester.id),
                 )
+
+            await _collect_semesters(
+                refreshed_exam_semesters, collect_exams, description="Processing exams"
+            )
             exam_success_ids = {
                 str(semester.id)
                 for semester in selected_semesters
@@ -928,8 +1021,14 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
             store.put_metadata(
                 {
                     "curriculum_fetch_status": "complete"
-                    if not exam_failed_ids
-                    else "exams_unavailable",
+                    if not (exam_failed_ids or unavailable_ids)
+                    else "partial_sources_unavailable",
+                    "curriculum_successful_semester_ids": ",".join(
+                        sorted(complete_ids, key=int)
+                    ),
+                    "curriculum_unavailable_semester_ids": ",".join(
+                        sorted(unavailable_ids, key=int)
+                    ),
                     "catalog_exam_successful_semester_ids": ",".join(
                         sorted(exam_success_ids, key=int)
                     ),
@@ -957,6 +1056,7 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
                 diagnostic_dir / "contract-report.json",
                 logger=logger,
             )
+            store.put_metadata({"generated_at": datetime.now(UTC).isoformat()})
     except BaseException:
         store.conn.rollback()
         guesses.conn.rollback()
