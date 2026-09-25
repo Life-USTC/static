@@ -422,7 +422,7 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
                     AsyncMock(
                         side_effect=[
                             _jw_payload(list(range(1, 101))),
-                            httpx.ReadTimeout("timed out"),
+                            httpx.ConnectError("connection failed"),
                         ]
                     ),
                 ),
@@ -480,12 +480,68 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
         finally:
             store.close()
 
+    async def test_transport_errors_are_declared_but_local_protocol_errors_abort(self):
+        for error in (
+            httpx.ConnectError("connection failed"),
+            httpx.ReadError("reset"),
+            httpx.RemoteProtocolError("peer closed"),
+        ):
+            store = SQLiteModelStore(":memory:")
+            _register_upstream_tables(store)
+            try:
+                with patch(
+                    "src.curriculum.fetch_courses_json", AsyncMock(side_effect=error)
+                ):
+                    await _store_semester(
+                        session=MagicMock(),
+                        store=store,
+                        guesses=MagicMock(),
+                        contracts=ObservedContractCollector(),
+                        semester_id="201",
+                        previous_course_ids_by_code={},
+                    )
+                self.assertEqual(
+                    store.conn.execute(
+                        "SELECT source,ok FROM upstream_fetches"
+                    ).fetchall(),
+                    [("catalog_teach_lesson_list_for_teach", 0)],
+                )
+            finally:
+                store.close()
+        store = SQLiteModelStore(":memory:")
+        try:
+            with (
+                patch(
+                    "src.curriculum.fetch_courses_json",
+                    AsyncMock(side_effect=httpx.LocalProtocolError("invalid request")),
+                ),
+                self.assertRaises(httpx.LocalProtocolError),
+            ):
+                await _store_semester(
+                    session=MagicMock(),
+                    store=store,
+                    guesses=MagicMock(),
+                    contracts=ObservedContractCollector(),
+                    semester_id="201",
+                    previous_course_ids_by_code={},
+                )
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM upstream_fetches").fetchone()[
+                    0
+                ],
+                0,
+            )
+        finally:
+            store.close()
+
     async def test_unavailable_exams_are_recorded_as_failed_not_empty(self):
         request = httpx.Request(
             "GET", "https://catalog.ustc.edu.cn/api/teach/exam/list/201"
         )
         for error in (
             httpx.ReadTimeout("timed out"),
+            httpx.ConnectError("connection failed"),
+            httpx.RemoteProtocolError("peer closed"),
             httpx.HTTPStatusError(
                 "Bad Gateway",
                 request=request,

@@ -565,7 +565,12 @@ async def _store_catalog_exams(
             timeout=CATALOG_EXAM_TIMEOUT_MS,
             transient_retries=0,
         )
-    except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+    except (
+        httpx.TimeoutException,
+        httpx.NetworkError,
+        httpx.RemoteProtocolError,
+        httpx.HTTPStatusError,
+    ) as error:
         if isinstance(
             error, httpx.HTTPStatusError
         ) and error.response.status_code not in {502, 504}:
@@ -749,7 +754,12 @@ async def _store_semester(
 ) -> None:
     try:
         payload = await fetch_courses_json(session=session, semester_id=semester_id)
-    except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+    except (
+        httpx.TimeoutException,
+        httpx.NetworkError,
+        httpx.RemoteProtocolError,
+        httpx.HTTPStatusError,
+    ) as error:
         _record_unavailable_curriculum(
             store,
             guesses,
@@ -795,7 +805,12 @@ async def _store_semester(
             catalog_response=catalog_response,
             courses=courses,
         )
-    except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+    except (
+        httpx.TimeoutException,
+        httpx.NetworkError,
+        httpx.RemoteProtocolError,
+        httpx.HTTPStatusError,
+    ) as error:
         _record_unavailable_curriculum(
             store,
             guesses,

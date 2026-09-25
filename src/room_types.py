@@ -92,7 +92,12 @@ async def ensure_room_types(
         context = {"semester_id": semester_id}
         try:
             payload = await fetch_jw_courses_json(session, semester_id)
-        except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+        except (
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.RemoteProtocolError,
+            httpx.HTTPStatusError,
+        ) as error:
             if isinstance(
                 error, httpx.HTTPStatusError
             ) and error.response.status_code not in {502, 504}:

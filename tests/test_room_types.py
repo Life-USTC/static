@@ -108,7 +108,7 @@ class RoomTypeTest(unittest.IsolatedAsyncioTestCase):
             with (
                 patch(
                     "src.room_types.fetch_jw_courses_json",
-                    AsyncMock(side_effect=httpx.ReadTimeout("unavailable")),
+                    AsyncMock(side_effect=httpx.ConnectError("unavailable")),
                 ),
                 self.assertRaisesRegex(ValueError, "Unresolved JW room types"),
             ):
