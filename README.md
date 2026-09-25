@@ -70,10 +70,27 @@ User-Agent 标明项目地址，并有每课程页数 / 资源数 / 单文件大
 日更由 GitHub Actions（`build.yml`）驱动。本地与测试约定见仓库内 `tests/` 与
 `pyproject.toml`；本 README 只描述产物语义。
 
+课程采集覆盖学校学期列表中的全部学期，不按年份截断课程或考试。已结束学期的
+课程与课表、考试分别缓存，只有对应来源完整、每份响应未满 30 天时才复用；未结束
+学期每次刷新。缺少考试缓存的旧学期会补抓考试，无需重复抓取仍新鲜的课程和课表。
+课程或课表抓取失败、空响应或返回教学班 ID 与请求不一致会中止更新，保留此前产物。
+
+考试接口每学期限时 60 秒。超时或 502/504 会记录失败的 `upstream_fetches`（`ok=0`），
+并在 `catalog_exam_unavailable_semester_ids` 中列出，下次运行继续重试。这些学期的考试
+不可用于覆盖或删除生产记录；只有成功响应（包括空列表）才有权威性。其他 HTTP 错误、
+非 JSON 或类型校验失败仍中止更新。`curriculum_fetch_status=exams_unavailable` 明确表示
+课程和课表完整，但部分考试来源不可用，不等同于全部来源成功。
+
+`upstream_fetches.fetched_at` 保留每个来源的实际抓取时间。metadata 的
+`selected_semester_ids`、`refreshed_semester_ids`、`cached_ended_semester_ids` 描述课程与
+课表范围；`catalog_exam_refreshed_semester_ids`、`catalog_exam_cached_semester_ids` 与
+`catalog_exam_successful_semester_ids` 分别描述考试请求、缓存和可用范围。
+课程与考试的最小学期 ID 均为 1。
+
 本地执行 `uv run python main.py --curriculum` 会在 Pydantic validation 前累计原始
 JSON，并在替换 SQLite 和 expected schema 前完成契约检查。Observed schemas 与 report
 只写入被 git 忽略、不会发布到 Pages 的 `.artifacts/upstream-contracts/`。使用
-`uv run python main.py --verify-upstream-contract` 可强制刷新所有 selected semesters，
+`uv run python main.py --verify-upstream-contract` 可强制刷新学校列出的所有学期，
 获得完整的本地 fetch-context coverage。
 
 上游新增字段、缺失 required 字段和类型不兼容会使 builder 失败。有完整 context

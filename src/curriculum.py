@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import datetime
 from json import JSONDecodeError
 
 import httpx
@@ -53,8 +54,8 @@ CATALOG_LESSON_URL_PREFIX = (
 )
 CATALOG_EXAM_URL_PREFIX = "https://catalog.ustc.edu.cn/api/teach/exam/list"
 JW_SCHEDULE_TABLE_URL = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
-MIN_CATALOG_LESSON_SEMESTER_ID = 221
-MIN_CATALOG_EXAM_SEMESTER_ID = 381
+ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+CATALOG_EXAM_TIMEOUT_MS = 60_000
 JW_SCHEDULE_CHUNK_SIZE = 100
 JW_SCHEDULE_EXPECTED_CHUNK_COUNT_KEY_PREFIX = "jw_schedule_expected_chunk_count_"
 CATALOG_LESSON_TABLE = "catalog_teach_lesson_list_for_teach"
@@ -186,25 +187,6 @@ def _course_chunks(
     return [courses[i : i + chunk_size] for i in range(0, len(courses), chunk_size)]
 
 
-def _is_semester_at_or_after(semester_id: str, minimum_semester_id: int) -> bool:
-    try:
-        return int(semester_id) >= minimum_semester_id
-    except ValueError:
-        return True
-
-
-def _should_fetch_catalog_lessons(semester_id: str) -> bool:
-    return _is_semester_at_or_after(semester_id, MIN_CATALOG_LESSON_SEMESTER_ID)
-
-
-def _should_fetch_jw_schedule_table(semester_id: str) -> bool:
-    return True
-
-
-def _should_fetch_catalog_exams(semester_id: str) -> bool:
-    return _is_semester_at_or_after(semester_id, MIN_CATALOG_EXAM_SEMESTER_ID)
-
-
 def _semester_sort_key(semester: Semester) -> int:
     try:
         return int(semester.id)
@@ -212,15 +194,7 @@ def _semester_sort_key(semester: Semester) -> int:
         return 0
 
 
-def _selected_curriculum_semesters(semesters: list[Semester]) -> list[Semester]:
-    return [
-        semester
-        for semester in semesters
-        if _should_fetch_catalog_lessons(str(semester.id))
-    ]
-
-
-def _semester_has_ended(semester: Semester, now_timestamp: int) -> bool:
+def _semester_has_ended(semester: Semester, now_timestamp: float) -> bool:
     return semester.endDate > 0 and semester.endDate < now_timestamp
 
 
@@ -228,7 +202,7 @@ def _refresh_curriculum_semesters(
     semesters: list[Semester],
     *,
     cached_semester_ids: set[str],
-    now_timestamp: int,
+    now_timestamp: float,
 ) -> list[Semester]:
     return [
         semester
@@ -242,7 +216,7 @@ def _curriculum_semesters_to_refresh(
     semesters: list[Semester],
     *,
     cached_semester_ids: set[str],
-    now_timestamp: int,
+    now_timestamp: float,
     verify_upstream_contract: bool,
 ) -> list[Semester]:
     if verify_upstream_contract:
@@ -254,19 +228,71 @@ def _curriculum_semesters_to_refresh(
     )
 
 
-def _cached_complete_semester_ids(
-    store: SQLiteModelStore, semesters: list[Semester]
+def _cached_fresh_lesson_semester_ids(
+    store: SQLiteModelStore, semesters: list[Semester], *, now_timestamp: float
 ) -> set[str]:
     return {
         str(semester.id)
         for semester in semesters
         if _has_cached_catalog_lessons(store, str(semester.id))
         and _has_cached_jw_schedule(store, str(semester.id))
-        and (
-            not _should_fetch_catalog_exams(str(semester.id))
-            or _has_cached_catalog_exams(store, str(semester.id))
+        and _semester_cache_is_fresh(
+            store,
+            str(semester.id),
+            now_timestamp,
+            sources={
+                "catalog_teach_lesson_list_for_teach",
+                "jw_ws_schedule_table_datum",
+            },
         )
     }
+
+
+def _cached_fresh_exam_semester_ids(
+    store: SQLiteModelStore, semesters: list[Semester], *, now_timestamp: float
+) -> set[str]:
+    return {
+        str(semester.id)
+        for semester in semesters
+        if _has_cached_catalog_exams(store, str(semester.id))
+        and _semester_cache_is_fresh(
+            store, str(semester.id), now_timestamp, sources={"catalog_teach_exam_list"}
+        )
+    }
+
+
+def _semester_cache_is_fresh(
+    store: SQLiteModelStore,
+    semester_id: str,
+    now_timestamp: float,
+    *,
+    sources: set[str],
+) -> bool:
+    fetches = store.conn.execute(
+        """
+        SELECT source, context, fetched_at FROM upstream_fetches
+        WHERE source IN ('catalog_teach_lesson_list_for_teach',
+                         'catalog_teach_exam_list', 'jw_ws_schedule_table_datum')
+        """
+    )
+    timestamps = []
+    for source, context, fetched_at in fetches:
+        if (
+            source not in sources
+            or _fetch_context_values(context).get("semester_id") != semester_id
+        ):
+            continue
+        try:
+            parsed = datetime.fromisoformat(fetched_at)
+            if parsed.tzinfo is None:
+                return False
+            timestamps.append(parsed.timestamp())
+        except (TypeError, ValueError):
+            return False
+    return bool(timestamps) and all(
+        0 <= now_timestamp - timestamp < ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS
+        for timestamp in timestamps
+    )
 
 
 def _has_cached_catalog_lessons(store: SQLiteModelStore, semester_id: str) -> bool:
@@ -391,19 +417,14 @@ def _has_cached_jw_schedule(store: SQLiteModelStore, semester_id: str) -> bool:
 def _has_cached_source_semester(
     store: SQLiteModelStore, *, source: str, semester_id: str
 ) -> bool:
-    return (
-        store.conn.execute(
-            """
-            SELECT 1 FROM upstream_fetches
+    return store.conn.execute(
+        """
+            SELECT COUNT(*), MIN(ok) FROM upstream_fetches
             WHERE source = ?
-              AND ok = 1
               AND context = ?
-            LIMIT 1
             """,
-            (source, f"semester_id={semester_id}"),
-        ).fetchone()
-        is not None
-    )
+        (source, f"semester_id={semester_id}"),
+    ).fetchone() == (1, 1)
 
 
 def _delete_source_fetches(store: SQLiteModelStore, source: str) -> None:
@@ -426,10 +447,7 @@ def _delete_cached_semester(
             """
             SELECT id FROM upstream_fetches
             WHERE (
-                source IN (
-                    'catalog_teach_lesson_list_for_teach',
-                    'catalog_teach_exam_list'
-                )
+                source = 'catalog_teach_lesson_list_for_teach'
                 AND context = ?
             )
             OR (
@@ -446,23 +464,6 @@ def _delete_cached_semester(
     ]
     store.delete_fetches(fetch_ids)
     guesses.delete_semester(semester_id)
-
-
-def _is_skippable_exam_fetch_error(error: Exception) -> bool:
-    if isinstance(error, httpx.HTTPStatusError):
-        return error.response.status_code in {502, 504}
-
-    message = str(error).lower()
-    return any(
-        marker in message
-        for marker in (
-            " 502 ",
-            " 504 ",
-            "502 proxy error",
-            "504 gateway time-out",
-            "gateway time-out",
-        )
-    )
 
 
 def _register_upstream_tables(store: SQLiteModelStore) -> None:
@@ -486,6 +487,13 @@ async def _store_catalog_semesters(
         fetch_context="request",
     )
     response = TeachSemesterListResponse.model_validate(payload)
+    if not response.root:
+        raise ValueError("Catalog semester response must be a nonempty list")
+    ids = [semester.id for semester in response.root]
+    if any(semester_id is None or semester_id <= 0 for semester_id in ids) or len(
+        ids
+    ) != len(set(ids)):
+        raise ValueError("Catalog semester response has invalid or duplicate IDs")
     fetch_id = store.record_fetch(
         source="catalog_teach_semester_list",
         method="GET",
@@ -526,6 +534,18 @@ async def _store_catalog_departments(
     store.put_metadata({"catalog_teach_department_college_tree_count": count})
 
 
+def _delete_cached_exams(store: SQLiteModelStore, semester_id: str) -> None:
+    fetch_ids = [
+        row[0]
+        for row in store.conn.execute(
+            "SELECT id FROM upstream_fetches "
+            "WHERE source = 'catalog_teach_exam_list' AND context = ?",
+            (f"semester_id={semester_id}",),
+        )
+    ]
+    store.delete_fetches(fetch_ids)
+
+
 async def _store_catalog_exams(
     *,
     session: RequestSession,
@@ -534,37 +554,33 @@ async def _store_catalog_exams(
     semester_id: str,
 ) -> None:
     url = f"{CATALOG_EXAM_URL_PREFIX}/{semester_id}"
-    if not _should_fetch_catalog_exams(semester_id):
-        logger.info(
-            "Skipping catalog exams for legacy semester %s below minimum id %s",
-            semester_id,
-            MIN_CATALOG_EXAM_SEMESTER_ID,
-        )
-        return
-
     try:
         payload = await fetch_exams_json(
             session=session,
             semester_id=semester_id,
+            timeout=CATALOG_EXAM_TIMEOUT_MS,
             transient_retries=0,
         )
-    except Exception as e:
-        if not _is_skippable_exam_fetch_error(e):
+    except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+        if isinstance(
+            error, httpx.HTTPStatusError
+        ) and error.response.status_code not in {502, 504}:
             raise
+        _delete_cached_exams(store, semester_id)
         store.record_fetch(
             source="catalog_teach_exam_list",
             method="GET",
             url=url,
             context={"semester_id": semester_id},
             ok=False,
-            error=str(e),
+            error=f"{type(error).__name__}: {error}",
         )
         logger.warning(
-            "Skipping catalog exams for semester %s after upstream 502/504",
+            "Catalog exams unavailable for semester %s: %s",
             semester_id,
+            type(error).__name__,
         )
         return
-
     contracts.observe_and_assert_compatible(
         CATALOG_EXAMS,
         payload,
@@ -572,6 +588,9 @@ async def _store_catalog_exams(
         fetch_context=f"semester={semester_id}",
     )
     response = TeachExamListResponse.model_validate(payload)
+    if response.root is None:
+        raise ValueError("Catalog exam response must be a list")
+    _delete_cached_exams(store, semester_id)
     fetch_id = store.record_fetch(
         source="catalog_teach_exam_list",
         method="GET",
@@ -636,6 +655,23 @@ async def _store_jw_schedule_chunks(
             coverage_context=f"semester={semester_id}",
         )
         response = JwWsScheduleTableDatumResponse.model_validate(payload)
+        requested_ids = {course.id for course in chunk}
+        if response.result is None or response.result.lessonList is None:
+            raise ValueError(f"JW response has no lesson list for {semester_id}")
+        returned_ids = [lesson.id for lesson in response.result.lessonList]
+        if (
+            len(returned_ids) != len(requested_ids)
+            or set(returned_ids) != requested_ids
+        ):
+            raise ValueError(
+                f"JW lesson IDs do not match requested chunk {chunk_index} "
+                f"for semester {semester_id}"
+            )
+        for rows in (response.result.scheduleList, response.result.scheduleGroupList):
+            if rows is None or any(row.lessonId not in requested_ids for row in rows):
+                raise ValueError(
+                    f"JW schedule/group list is incomplete for {semester_id}"
+                )
         schedule_responses.append(response)
         fetch_id = store.record_fetch(
             source="jw_ws_schedule_table_datum",
@@ -698,12 +734,6 @@ async def _store_semester(
     logger.info("Stored %s catalog lessons for semester %s", lesson_count, semester_id)
 
     courses = parse_courses(payload)
-    await _store_catalog_exams(
-        session=session,
-        store=store,
-        contracts=contracts,
-        semester_id=semester_id,
-    )
     await _store_jw_schedule_chunks(
         session=session,
         store=store,
@@ -739,33 +769,43 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
             await _store_catalog_departments(
                 session=session, store=store, contracts=contracts
             )
-            selected_semesters = _selected_curriculum_semesters(semesters)
+            selected_semesters = semesters
             selected_semester_ids = {
                 f"semester={semester.id}" for semester in selected_semesters
             }
             contracts.require_contexts(CATALOG_LESSONS, selected_semester_ids)
-            contracts.require_contexts(JW_SCHEDULES, selected_semester_ids)
-            contracts.require_contexts(
-                CATALOG_EXAMS,
-                {
-                    f"semester={semester.id}"
-                    for semester in selected_semesters
-                    if _should_fetch_catalog_exams(str(semester.id))
-                },
-            )
+            contracts.require_contexts(CATALOG_EXAMS, selected_semester_ids)
             reuse_curriculum_cache = reuse_snapshot and reuse_guesses
+            now_timestamp = time.time()
             cached_semester_ids = (
-                _cached_complete_semester_ids(store, selected_semesters)
+                _cached_fresh_lesson_semester_ids(
+                    store, selected_semesters, now_timestamp=now_timestamp
+                )
                 if reuse_curriculum_cache
                 else set()
             )
-            now_timestamp = int(time.time())
             refreshed_semesters = _curriculum_semesters_to_refresh(
                 selected_semesters,
                 cached_semester_ids=cached_semester_ids,
                 now_timestamp=now_timestamp,
                 verify_upstream_contract=verify_upstream_contract,
             )
+            cached_exam_semester_ids = (
+                _cached_fresh_exam_semester_ids(
+                    store, selected_semesters, now_timestamp=now_timestamp
+                )
+                if reuse_curriculum_cache
+                else set()
+            )
+            refreshed_exam_semesters = _curriculum_semesters_to_refresh(
+                selected_semesters,
+                cached_semester_ids=cached_exam_semester_ids,
+                now_timestamp=now_timestamp,
+                verify_upstream_contract=verify_upstream_contract,
+            )
+            refreshed_exam_ids = {
+                str(semester.id) for semester in refreshed_exam_semesters
+            }
             refreshed_semester_ids = {
                 str(semester.id) for semester in refreshed_semesters
             }
@@ -773,16 +813,6 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
                 str(semester.id)
                 for semester in sorted(selected_semesters, key=_semester_sort_key)
                 if str(semester.id) not in refreshed_semester_ids
-            ]
-            skipped_catalog_lesson_semester_ids = [
-                str(semester.id)
-                for semester in sorted(semesters, key=_semester_sort_key)
-                if not _should_fetch_catalog_lessons(str(semester.id))
-            ]
-            skipped_catalog_exam_semester_ids = [
-                str(semester.id)
-                for semester in sorted(selected_semesters, key=_semester_sort_key)
-                if not _should_fetch_catalog_exams(str(semester.id))
             ]
             store.put_metadata(
                 {
@@ -799,33 +829,37 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
                     "refreshed_semester_count": len(refreshed_semesters),
                     "cached_ended_semester_count": len(cached_ended_semester_ids),
                     "cached_ended_semester_ids": ",".join(cached_ended_semester_ids),
-                    "catalog_lesson_min_semester_id": MIN_CATALOG_LESSON_SEMESTER_ID,
-                    "catalog_lesson_skipped_legacy_semester_count": len(
-                        skipped_catalog_lesson_semester_ids
+                    "selected_semester_ids": ",".join(
+                        str(semester.id)
+                        for semester in sorted(semesters, key=_semester_sort_key)
                     ),
-                    "catalog_lesson_skipped_legacy_semester_ids": ",".join(
-                        skipped_catalog_lesson_semester_ids
+                    "refreshed_semester_ids": ",".join(
+                        sorted(refreshed_semester_ids, key=int)
                     ),
-                    "jw_schedule_min_semester_id": "selected_catalog_lessons",
-                    "jw_schedule_selected_semester_count": sum(
-                        _should_fetch_jw_schedule_table(str(semester.id))
-                        for semester in selected_semesters
+                    "ended_semester_cache_max_age_seconds": (
+                        ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS
                     ),
-                    "jw_schedule_skipped_legacy_semester_count": sum(
-                        not _should_fetch_jw_schedule_table(str(semester.id))
-                        for semester in selected_semesters
+                    "catalog_lesson_min_semester_id": 1,
+                    "catalog_exam_min_semester_id": 1,
+                    "catalog_exam_selected_semester_count": len(selected_semesters),
+                    "catalog_lesson_skipped_legacy_semester_count": 0,
+                    "catalog_lesson_skipped_legacy_semester_ids": "",
+                    "catalog_exam_skipped_legacy_semester_count": 0,
+                    "catalog_exam_skipped_legacy_semester_ids": "",
+                    "jw_schedule_min_semester_id": 1,
+                    "jw_schedule_selected_semester_count": len(selected_semesters),
+                    "jw_schedule_skipped_legacy_semester_count": 0,
+                    "catalog_exam_refreshed_semester_ids": ",".join(
+                        sorted(refreshed_exam_ids, key=int)
                     ),
-                    "catalog_exam_min_semester_id": MIN_CATALOG_EXAM_SEMESTER_ID,
-                    "catalog_exam_selected_semester_count": sum(
-                        _should_fetch_catalog_exams(str(semester.id))
-                        for semester in selected_semesters
+                    "catalog_exam_cached_semester_ids": ",".join(
+                        sorted(
+                            {str(semester.id) for semester in selected_semesters}
+                            - refreshed_exam_ids,
+                            key=int,
+                        )
                     ),
-                    "catalog_exam_skipped_legacy_semester_count": len(
-                        skipped_catalog_exam_semester_ids
-                    ),
-                    "catalog_exam_skipped_legacy_semester_ids": ",".join(
-                        skipped_catalog_exam_semester_ids
-                    ),
+                    "curriculum_fetch_status": "in_progress",
                 }
             )
 
@@ -852,6 +886,66 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
                     previous_course_ids_by_code=previous_course_ids_by_code,
                 )
             _stored_course_ids_by_code(store)
+            complete_ids = _cached_fresh_lesson_semester_ids(
+                store, selected_semesters, now_timestamp=time.time()
+            )
+            if complete_ids != {str(semester.id) for semester in selected_semesters}:
+                raise RuntimeError(
+                    "Curriculum snapshot contains incomplete or stale semesters"
+                )
+            for semester in tqdm(
+                refreshed_exam_semesters,
+                position=1,
+                leave=True,
+                desc="Processing exams",
+            ):
+                await _store_catalog_exams(
+                    session=session,
+                    store=store,
+                    contracts=contracts,
+                    semester_id=str(semester.id),
+                )
+            exam_success_ids = {
+                str(semester.id)
+                for semester in selected_semesters
+                if _has_cached_catalog_exams(store, str(semester.id))
+            }
+            exam_failed_ids = {
+                _fetch_context_values(context)["semester_id"]
+                for (context,) in store.conn.execute(
+                    "SELECT context FROM upstream_fetches "
+                    "WHERE source = 'catalog_teach_exam_list' AND ok = 0"
+                )
+            }
+            if (
+                exam_failed_ids
+                != {str(semester.id) for semester in selected_semesters}
+                - exam_success_ids
+            ):
+                raise RuntimeError(
+                    "Catalog exams missing explicit success/failure provenance"
+                )
+            store.put_metadata(
+                {
+                    "curriculum_fetch_status": "complete"
+                    if not exam_failed_ids
+                    else "exams_unavailable",
+                    "catalog_exam_successful_semester_ids": ",".join(
+                        sorted(exam_success_ids, key=int)
+                    ),
+                    "catalog_exam_unavailable_semester_ids": ",".join(
+                        sorted(exam_failed_ids, key=int)
+                    ),
+                }
+            )
+            contracts.require_contexts(
+                JW_SCHEDULES,
+                {
+                    f"semester={semester.id}"
+                    for semester in selected_semesters
+                    if _catalog_lesson_chunk_count(store, str(semester.id))
+                },
+            )
             diagnostic_dir = BASE_DIR / ".artifacts" / "upstream-contracts"
             issues = publish_contract_artifacts(
                 contracts,
@@ -863,6 +957,10 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
                 diagnostic_dir / "contract-report.json",
                 logger=logger,
             )
+    except BaseException:
+        store.conn.rollback()
+        guesses.conn.rollback()
+        raise
     finally:
         store.close()
         guesses.close()
