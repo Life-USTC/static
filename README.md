@@ -93,6 +93,11 @@ User-Agent 标明项目地址，并有每课程页数 / 资源数 / 单文件大
 `curriculum_successful_semester_ids` 列出课程与课表都完整的范围。
 课程与考试的最小学期 ID 均为 1，`generated_at` 为此次产物完成组装的时间。
 
+SQLite schema 6 始终包含 `jw_room_types`（可为空）。课表中的教室对象提供常见类型，
+教学班仅提供 `roomTypeId`；缺少描述的引用从教务 lesson-search 的真实 `roomType` 对象
+补齐，保留学期和 fetch provenance。补充字典每次构建重新抓取，只访问仍缺类型的学期；
+分页不完整、类型冲突或仍有未解析引用会阻止发布。该表只存类型描述，不保存查询账号路径。
+
 本地执行 `uv run python main.py --curriculum` 会在 Pydantic validation 前累计原始
 JSON，并在替换 SQLite 和 expected schema 前完成契约检查。Observed schemas 与 report
 只写入被 git 忽略、不会发布到 Pages 的 `.artifacts/upstream-contracts/`。使用

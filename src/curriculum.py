@@ -25,6 +25,7 @@ from .observed_contracts import (
     log_contract_diagnostics,
     publish_contract_artifacts,
 )
+from .room_types import ensure_room_types
 from .sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
 from .upstream_contracts import (
     CATALOG_DEPARTMENTS,
@@ -1037,6 +1038,7 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
                     ),
                 }
             )
+            await ensure_room_types(session=session, store=store)
             contracts.require_contexts(
                 JW_SCHEDULES,
                 {

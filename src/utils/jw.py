@@ -176,7 +176,9 @@ async def fetch_jw_courses_json(session: RequestSession, semester_id: str) -> di
         "referer": f"https://jw.ustc.edu.cn/for-std/lesson-search/index/{user_id}",
     }
 
-    return await session.get_json(url=url, headers=headers)
+    return await session.get_json(
+        url=url, headers=headers, timeout=60_000, transient_retries=0
+    )
 
 
 def parse_jw_courses(payload: dict) -> list[Course]:
