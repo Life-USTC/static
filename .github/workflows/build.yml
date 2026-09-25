@@ -42,11 +42,9 @@ jobs:
           mapfile -t run_ids < <(gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --workflow build.yml \
-            --branch master \
-            --status success \
-            --limit 7 \
-            --json databaseId \
-            --jq '.[].databaseId')
+            --limit 50 \
+            --json databaseId,headBranch,conclusion \
+            --jq '[.[] | select(.headBranch == "master" and .conclusion == "success")][:7][].databaseId')
           if [ "${#run_ids[@]}" -eq 0 ]; then
             echo "No previous successful build artifact found"
             exit 0
