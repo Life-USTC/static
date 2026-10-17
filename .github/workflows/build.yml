@@ -30,6 +30,17 @@ jobs:
           repository: ${{ github.repository }}
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Resolve pinned patchright version
+        id: patchright
+        run: |
+          version=$(grep -A1 '^name = "patchright"$' uv.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-patchright-${{ steps.patchright.outputs.version }}
       - name: Install dependencies
         run: |
           uv sync --no-dev
