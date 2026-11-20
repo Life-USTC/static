@@ -59,7 +59,7 @@ Young 每次构建都会完整刷新进行中和已结束活动列表，并在�
 
 ## 学校课程目录
 
-`uv run python main.py --course-catalog` 匿名更新全部目录资料；也可用 `--section-semester ID` 指定一个或多个学期，用 `--catalog-relationships` 只更新分组和执行计划。完整构建自动采集这些数据。[官网接口与字段](docs/school-catalog-interfaces.md)
+`uv run python main.py --course-catalog` 更新全部目录资料。配置学校账号时，目录采集器共用一次登录；校内允许匿名访问时也可直接运行；也可用 `--section-semester ID` 指定一个或多个学期，用 `--catalog-relationships` 只更新分组和执行计划。完整构建自动采集这些数据。[官网接口与字段](docs/school-catalog-interfaces.md)
 
 课程与教学班详情分别保存在 `catalog_teach_course_infos` 和 `catalog_teach_lesson_infos`。课程摘要变化时立即刷新，其他课程详情每 14 天复核。教学班按学期、班号及课程 ID 校验；历史学期复用可信开课索引，名单出现分歧时回查官网。完整历史资料最多缓存 30 天，缺项每 7 天重试。
 

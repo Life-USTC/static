@@ -4,9 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.fixtures.catalog_cache import seed_catalog_cache
 from tools.verify_build import (
     BUILDER_NAMES,
     BuildVerificationError,
+    _verify_builder_outputs,
     _verify_section_counts,
     _write_status_summary,
     verify_build,
@@ -45,6 +47,14 @@ class BuildVerificationTest(unittest.TestCase):
             )
 
             self.assertNotIn("skipped", summary_path.read_text(encoding="utf-8"))
+
+    def test_publication_rejects_a_snapshot_missing_cached_catalog_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sqlite3.connect(root / "life-ustc-static.sqlite").close()
+            builders = {name: {"status": "failed"} for name in BUILDER_NAMES}
+            with self.assertRaisesRegex(BuildVerificationError, "no such table"):
+                _verify_builder_outputs(root, builders)
 
     def test_failed_authenticated_builders_skip_missing_contract_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -89,6 +99,7 @@ class BuildVerificationTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            seed_catalog_cache(build_dir / "life-ustc-static.sqlite")
             verify_build(
                 build_dir=build_dir,
                 status_path=status_path,

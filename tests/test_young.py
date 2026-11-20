@@ -31,6 +31,7 @@ from src.young import (
     _young_referenced_ids,
     make_young_events,
 )
+from tests.fixtures.catalog_cache import seed_catalog_cache
 from tools.verify_build import BUILDER_NAMES, verify_build
 
 
@@ -987,6 +988,7 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                 for name in BUILDER_NAMES
             }
             status.write_text(json.dumps({"builders": results}))
+            seed_catalog_cache(build / SNAPSHOT_FILENAME)
             verify_build(
                 build_dir=build,
                 status_path=status,

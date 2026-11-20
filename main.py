@@ -5,7 +5,7 @@ import logging
 import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
-from contextlib import closing
+from contextlib import AsyncExitStack, closing
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -19,7 +19,7 @@ from src.course_catalog import refresh_course_catalog
 from src.course_substitutions import refresh_course_substitutions
 from src.sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
 from src.study_plans import refresh_study_plans
-from src.utils.auth import RequestSession
+from src.utils.auth import RequestSession, USTCSession
 from tools.room_maps import build_room_maps
 from tools.upstream_schemas import export_upstream_schemas
 
@@ -82,17 +82,7 @@ async def _run_builders(
     return results
 
 
-async def run_public_course_builder(
-    build_dir: Path,
-    refresh: Callable[[RequestSession, SQLiteModelStore], Awaitable[None]],
-) -> None:
-    database = SQLiteModelStore(build_dir / SNAPSHOT_FILENAME, reset=False)
-    with closing(database), database.conn:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            await refresh(RequestSession(client=client, page=None), database)
-
-
-def main() -> None:
+async def _main() -> None:
     parser = argparse.ArgumentParser(description="Life-USTC static builders")
     for flag, help_text in {
         "rss": "Generate RSS",
@@ -151,6 +141,24 @@ def main() -> None:
                 ),
             )
         )
+    resources = AsyncExitStack()
+    catalog_session = None
+
+    async def run_catalog(refresh) -> None:
+        nonlocal catalog_session
+        if catalog_session is None:
+            login = USTCSession()
+            if login.username and login.password:
+                catalog_session = await resources.enter_async_context(login)
+            else:
+                client = await resources.enter_async_context(
+                    httpx.AsyncClient(follow_redirects=True)
+                )
+                catalog_session = RequestSession(client=client, page=None)
+        database = SQLiteModelStore(build_dir / SNAPSHOT_FILENAME, reset=False)
+        with closing(database), database.conn:
+            await refresh(catalog_session, database)
+
     for enabled, name, refresh in (
         (catalog, "course_catalog", refresh_course_catalog),
         (catalog, "course_substitutions", refresh_course_substitutions),
@@ -170,9 +178,7 @@ def main() -> None:
     ):
         if enabled:
             # Each public collector commits its own validated source or semester.
-            builders.append(
-                (name, partial(run_public_course_builder, build_dir, refresh), ())
-            )
+            builders.append((name, partial(run_catalog, refresh), ()))
     for name, refresh in (
         ("young", make_young_events),
         ("blackboard", make_blackboard),
@@ -180,9 +186,10 @@ def main() -> None:
         if run_all or getattr(args, name):
             builders.append((name, refresh, (build_dir / SNAPSHOT_FILENAME,)))
 
-    results = asyncio.run(
-        _run_builders(builders, status_path=build_dir / "build-status.json")
-    )
+    async with resources:
+        results = await _run_builders(
+            builders, status_path=build_dir / "build-status.json"
+        )
     if catalog_only and any(
         result["status"] == "failed" for result in results.values()
     ):
@@ -194,6 +201,10 @@ def main() -> None:
     if not curriculum_succeeded and (args.young or sections or relationships):
         schema_paths = export_upstream_schemas(build_dir / "schemas" / "upstream")
         logging.info("Exported %s upstream JSON schemas", len(schema_paths))
+
+
+def main() -> None:
+    asyncio.run(_main())
 
 
 if __name__ == "__main__":
