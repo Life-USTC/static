@@ -175,15 +175,20 @@ def _live_entries(script: str) -> tuple[_CatalogEntry, ...]:
             if len(set(source_ids)) != len(source_ids):
                 raise ValueError(f"Duplicate source IDs for catalog route {code!r}")
         entries.append(_CatalogEntry(code, kind, source_ids, name_cn, name_en))
-    if {entry.source_kind for entry in entries} != set(_SOURCE_KINDS.values()):
-        raise ValueError("The school catalog route table omits a classification kind")
+    if not entries:
+        raise ValueError("The school catalog route table is empty")
     return tuple(entries)
 
 
 async def _discover_browser_registry(
     session: RequestSession,
+    *,
+    revalidate: bool = False,
 ) -> tuple[str, tuple[_CatalogEntry, ...]]:
-    page = await session.get(_CATALOG_URL, timeout=30_000, transient_retries=1)
+    headers = {"Cache-Control": "no-cache"} if revalidate else None
+    page = await session.get(
+        _CATALOG_URL, timeout=30_000, transient_retries=1, headers=headers
+    )
     if not _browser_origin(page.url):
         raise ValueError("School catalog page redirected outside the catalog origin")
     parser = _ModuleScripts()
@@ -193,7 +198,9 @@ async def _discover_browser_registry(
     script_url = urljoin(page.url, parser.sources[0])
     if not _browser_origin(script_url):
         raise ValueError("School catalog module script has an unexpected origin")
-    response = await session.get(script_url, timeout=30_000, transient_retries=1)
+    response = await session.get(
+        script_url, timeout=30_000, transient_retries=1, headers=headers
+    )
     if not _browser_origin(response.url):
         raise ValueError(
             "School catalog module script redirected outside the catalog origin"
@@ -378,16 +385,16 @@ def _entry_sources(
     return sources
 
 
-def _check_scope(
+def _scope_shrink(
     store: SQLiteModelStore,
     entries: tuple[_CatalogEntry, ...],
     sources: Mapping[_Source, list[_EntryRow]],
-) -> None:
+) -> str | None:
     if not store.conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
         (CATALOG_GROUP_ENTRIES,),
     ).fetchone():
-        return
+        return None
     previous = store.conn.execute(
         f"SELECT source_kind, COUNT(DISTINCT route_key), COUNT(DISTINCT source_id), "
         f"COUNT(*) FROM {CATALOG_GROUP_ENTRIES} GROUP BY source_kind"
@@ -397,13 +404,13 @@ def _check_scope(
         endpoints = [source for source in sources if source.source_kind == kind]
         links = sum(len(sources[source]) for source in endpoints)
         if routes < old_routes or len(endpoints) < old_sources or links < old_links:
-            raise ValueError(
+            return (
                 f"School catalog registry shrank for {kind}: "
                 f"routes {old_routes} → {routes}, "
                 f"endpoints {old_sources} → {len(endpoints)}, "
-                f"links {old_links} → {links}. "
-                "Previous catalog groups were kept."
+                f"links {old_links} → {links}"
             )
+    return None
 
 
 async def _fetch_source(session: RequestSession, source: _Source) -> _SourceSnapshot:
@@ -473,7 +480,16 @@ async def refresh_catalog_groups(
     """Fetch each classification endpoint once and replace the snapshot as a unit."""
     registry_url, entries = await _discover_browser_registry(session)
     sources = _entry_sources(entries)
-    _check_scope(store, entries, sources)
+    shrink = _scope_shrink(store, entries, sources)
+    if shrink:
+        confirmed_url, confirmed = await _discover_browser_registry(
+            session, revalidate=True
+        )
+        if confirmed != entries:
+            raise ValueError(
+                f"{shrink}; the second registry did not confirm the change"
+            )
+        registry_url = confirmed_url
     snapshots: list[_SourceSnapshot] = []
     for sources_batch in batched(sources, _MAX_CONCURRENT_REQUESTS, strict=False):
         if snapshots:

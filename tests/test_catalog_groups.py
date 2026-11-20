@@ -78,6 +78,9 @@ class CatalogGroupsTest(unittest.IsolatedAsyncioTestCase):
         self.browser_asset = "/assets/index-reviewed.js"
         self.browser_source = browser_bundle(self.entries)
         self.browser_requests: list[str] = []
+        self.browser_revalidations: list[str] = []
+        self.revalidated_source: str | None = None
+        self.revalidation_status = 200
         self.settings = patch.multiple(
             "src.catalog_groups",
             _MAX_CONCURRENT_REQUESTS=2,
@@ -118,13 +121,22 @@ class CatalogGroupsTest(unittest.IsolatedAsyncioTestCase):
     async def handle(self, request: httpx.Request) -> httpx.Response:
         self.assertEqual(request.method, "GET")
         self.assertEqual(request.url.host, "catalog.ustc.edu.cn")
+        revalidate = request.headers.get("Cache-Control") == "no-cache"
         if str(request.url) == _CATALOG_URL:
+            if revalidate:
+                self.browser_revalidations.append(str(request.url))
             self.browser_requests.append(str(request.url))
             return httpx.Response(
                 200, text=f'<script type="module" src="{self.browser_asset}"></script>'
             )
         if request.url.path == self.browser_asset:
             self.browser_requests.append(str(request.url))
+            if revalidate:
+                self.browser_revalidations.append(str(request.url))
+                return httpx.Response(
+                    self.revalidation_status,
+                    text=self.revalidated_source or self.browser_source,
+                )
             return httpx.Response(200, text=self.browser_source)
         assert request.url.path.startswith(_COURSE_PREFIX)
         path = request.url.path.removeprefix(_COURSE_PREFIX)
@@ -249,20 +261,67 @@ class CatalogGroupsTest(unittest.IsolatedAsyncioTestCase):
             [("NEW01",)],
         )
 
-    async def test_smaller_registry_and_duplicate_route_keep_last_good_data(self):
+    async def test_confirmed_removal_replaces_the_snapshot(self):
+        await refresh_catalog_groups(self.session, self.store)
+        self.paths.clear()
+        smaller = tuple(x for x in self.entries if x.route_key != "quality")
+        self.browser_source = browser_bundle(smaller)
+        await refresh_catalog_groups(self.session, self.store)
+        self.assertEqual(
+            self.browser_revalidations,
+            [_CATALOG_URL, "https://catalog.ustc.edu.cn/assets/index-reviewed.js"],
+        )
+        self.assertNotIn("quality", self.paths)
+        self.assertEqual(
+            self.store.conn.execute(
+                f"SELECT count(*) FROM {CATALOG_GROUP_ENTRIES} "
+                "WHERE route_key='quality'"
+            ).fetchone(),
+            (0,),
+        )
+        self.assertEqual(
+            self.store.conn.execute(
+                f"SELECT count(*) FROM {CATALOG_GROUP_MEMBERS} "
+                "WHERE source_kind='quality'"
+            ).fetchone(),
+            (0,),
+        )
+
+    async def test_unconfirmed_removal_keeps_last_good_data(self):
         await refresh_catalog_groups(self.session, self.store)
         old = list(self.store.conn.iterdump())
         self.paths.clear()
-        for entries, message in (
-            (tuple(x for x in self.entries if x.route_key != "other"), "shrank"),
-            ((*self.entries, self.entries[0]), "Duplicate"),
-        ):
-            self.browser_source = browser_bundle(entries)
-            with self.subTest(message=message):
-                with self.assertRaisesRegex(ValueError, message):
-                    await refresh_catalog_groups(self.session, self.store)
-                self.assertEqual(self.paths, [])
-                self.assertEqual(list(self.store.conn.iterdump()), old)
+        smaller = tuple(x for x in self.entries if x.route_key != "other")
+        self.browser_source = browser_bundle(smaller)
+        self.revalidated_source = browser_bundle(self.entries)
+        with self.assertRaisesRegex(ValueError, "did not confirm"):
+            await refresh_catalog_groups(self.session, self.store)
+        self.assertEqual(len(self.browser_revalidations), 2)
+        self.assertEqual(self.paths, [])
+        self.assertEqual(list(self.store.conn.iterdump()), old)
+
+    async def test_failed_removal_confirmation_keeps_last_good_data(self):
+        await refresh_catalog_groups(self.session, self.store)
+        old = list(self.store.conn.iterdump())
+        self.paths.clear()
+        self.browser_source = browser_bundle(
+            tuple(x for x in self.entries if x.route_key != "other")
+        )
+        self.revalidation_status = 404
+        with self.assertRaises(httpx.HTTPStatusError):
+            await refresh_catalog_groups(self.session, self.store)
+        self.assertEqual(self.paths, [])
+        self.assertEqual(list(self.store.conn.iterdump()), old)
+
+    async def test_duplicate_route_keeps_last_good_data(self):
+        await refresh_catalog_groups(self.session, self.store)
+        old = list(self.store.conn.iterdump())
+        self.paths.clear()
+        self.browser_source = browser_bundle((*self.entries, self.entries[0]))
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            await refresh_catalog_groups(self.session, self.store)
+        self.assertEqual(self.paths, [])
+        self.assertEqual(list(self.store.conn.iterdump()), old)
 
     async def test_changed_endpoint_dispatch_fails_before_group_requests(self):
         self.browser_source = self.browser_source.replace(
