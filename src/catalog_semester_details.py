@@ -40,6 +40,7 @@ MISSING_PROBE_LIMIT = 6
 ACTIVE_REFRESH_AGE = timedelta(hours=12)
 RECENT_TERM_REFRESH_AGE = timedelta(days=7)
 RECENT_TERM_WINDOW = timedelta(days=120)
+SETTLED_TERM_REFRESH_AGE = timedelta(days=30)
 REQUEST_OPTIONS = {"timeout": 60_000, "transient_retries": 0}
 HISTORIC_NOT_FOUND = {404, 410}
 TIME_ZONE = ZoneInfo("Asia/Shanghai")
@@ -147,11 +148,53 @@ def _read_lesson_indexes(
     return result
 
 
-def _verified_curriculum_terms(
-    store: SQLiteModelStore, indexes: dict[int, dict[str, LessonIdentity]]
-) -> set[int]:
+def _stored_index_times(
+    store: SQLiteModelStore,
+    source: str,
+    indexes: dict[int, dict[str, LessonIdentity]],
+    now: datetime,
+) -> dict[int, datetime]:
     if not indexes:
-        return set()
+        return {}
+    fetches = {
+        context: (fetch_id, method, url, ok, fetched_at)
+        for fetch_id, context, method, url, ok, fetched_at in store.conn.execute(
+            "SELECT MIN(id), context, method, url, ok, fetched_at "
+            "FROM upstream_fetches WHERE source = ? "
+            "GROUP BY context HAVING COUNT(*) = 1",
+            (source,),
+        )
+    }
+    result = {}
+    for term, first_fetch, last_fetch, count in store.conn.execute(
+        f"SELECT semester_id, MIN(fetch_id), MAX(fetch_id), COUNT(*) "
+        f"FROM {source} GROUP BY semester_id HAVING COUNT(fetch_id) = COUNT(*)"
+    ):
+        if not term or first_fetch is None or first_fetch != last_fetch:
+            continue
+        term_id = int(term)
+        lessons = indexes.get(term_id, {})
+        fetch = fetches.get(f"semester_id={term_id}")
+        if (
+            len(lessons) != count
+            or len({identity.id for identity in lessons.values()}) != count
+            or fetch is None
+            or fetch[:4] != (first_fetch, "GET", f"{LESSON_LIST_URL}/{term_id}", 1)
+        ):
+            continue
+        observed_at = _observed_at(fetch[4])
+        if observed_at is not None and observed_at <= now:
+            result[term_id] = observed_at
+    return result
+
+
+def _verified_curriculum_times(
+    store: SQLiteModelStore,
+    indexes: dict[int, dict[str, LessonIdentity]],
+    now: datetime,
+) -> dict[int, datetime]:
+    if not indexes:
+        return {}
     metadata = dict(
         store.conn.execute(
             "SELECT key, value FROM metadata WHERE key IN ("
@@ -163,36 +206,19 @@ def _verified_curriculum_terms(
         "complete",
         "partial_sources_unavailable",
     }:
-        return set()
+        return {}
     covered = set(metadata.get("curriculum_successful_semester_ids", "").split(","))
     covered -= set(metadata.get("curriculum_unavailable_semester_ids", "").split(","))
-    fetches = {
-        context: (fetch_id, method, url, ok)
-        for fetch_id, context, method, url, ok in store.conn.execute(
-            "SELECT MIN(id), context, method, url, ok FROM upstream_fetches "
-            "WHERE source = ? GROUP BY context HAVING COUNT(*) = 1",
-            (CATALOG_LESSONS,),
+    return {
+        term_id: observed_at
+        for term_id, observed_at in _stored_index_times(
+            store, CATALOG_LESSONS, indexes, now
+        ).items()
+        if str(term_id) in covered
+        and all(
+            identity.course_id is not None for identity in indexes[term_id].values()
         )
     }
-    result = set()
-    for term, first_fetch, last_fetch, count in store.conn.execute(
-        f"SELECT semester_id, MIN(fetch_id), MAX(fetch_id), COUNT(*) "
-        f"FROM {CATALOG_LESSONS} GROUP BY semester_id "
-        "HAVING COUNT(fetch_id) = COUNT(*)"
-    ):
-        if str(term) not in covered or first_fetch is None or first_fetch != last_fetch:
-            continue
-        term_id = int(term)
-        lessons = indexes.get(term_id, {})
-        if (
-            len(lessons) == count
-            and all(identity.course_id is not None for identity in lessons.values())
-            and len({identity.id for identity in lessons.values()}) == count
-            and fetches.get(f"semester_id={term_id}")
-            == (first_fetch, "GET", f"{LESSON_LIST_URL}/{term_id}", 1)
-        ):
-            result.add(term_id)
-    return result
 
 
 def _add_lesson(
@@ -222,32 +248,41 @@ def _lesson_signature(lessons: dict[str, LessonIdentity]) -> str:
     return digest.hexdigest()
 
 
+def _observed_at(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        observed_at = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return observed_at if observed_at.tzinfo is not None else None
+
+
+def _snapshot_age(value: object, now: datetime) -> timedelta | None:
+    observed_at = _observed_at(value)
+    if observed_at is None or observed_at > now:
+        return None
+    return now - observed_at
+
+
 def _can_reuse(
     snapshot: dict, signature: str, semester: Semester, now: datetime
 ) -> bool:
     if snapshot.get("lesson_signature") != signature:
         return False
-    try:
-        fetched_at = datetime.fromisoformat(snapshot["refreshed_at"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    if fetched_at.tzinfo is None:
-        return False
-    age = now - fetched_at
-    if age < timedelta(0):
+    age = _snapshot_age(snapshot.get("refreshed_at"), now)
+    if age is None:
         return False
     today = now.astimezone(TIME_ZONE).date()
     if semester.needs_public_index(today):
         return age < ACTIVE_REFRESH_AGE
     if today - semester.end <= RECENT_TERM_WINDOW:
         return age < RECENT_TERM_REFRESH_AGE
-    # An old semester can be reused indefinitely if its lesson identity set
-    # hasn't changed. Revisit explicit absence on the recent-term cadence.
     if snapshot.get("lesson_infos_unavailable") or snapshot.get(
         "unavailable_lesson_codes"
     ):
         return age < RECENT_TERM_REFRESH_AGE
-    return True
+    return age < SETTLED_TERM_REFRESH_AGE
 
 
 async def _get_json(session: RequestSession, url: str):
@@ -473,14 +508,23 @@ def _store_public_index(
     )
 
 
-def _index_needs_retry(snapshot: dict, now: datetime) -> bool:
-    if snapshot.get("lesson_index_source") not in ("cached", "unavailable"):
-        return False
-    try:
-        checked = datetime.fromisoformat(snapshot["lesson_index_checked_at"])
-        return now - checked >= RECENT_TERM_REFRESH_AGE
-    except (KeyError, TypeError, ValueError):
-        return True
+def _index_needs_retry(
+    snapshot: dict, now: datetime, newer_curriculum_at: datetime | None
+) -> bool:
+    if not snapshot:
+        return newer_curriculum_at is not None
+    maximum_age = (
+        RECENT_TERM_REFRESH_AGE
+        if snapshot.get("lesson_index_source") in ("cached", "unavailable")
+        else SETTLED_TERM_REFRESH_AGE
+    )
+    checked_at = _observed_at(snapshot.get("lesson_index_checked_at"))
+    return (
+        checked_at is None
+        or checked_at > now
+        or now - checked_at >= maximum_age
+        or (newer_curriculum_at is not None and newer_curriculum_at > checked_at)
+    )
 
 
 def _ensure_profile_indexes(store: SQLiteModelStore) -> None:
@@ -508,23 +552,26 @@ async def _refresh_semester(
     *,
     requested: bool,
     verified_curriculum: bool,
+    newer_diverging_curriculum_at: datetime | None,
 ) -> bool:
     today = now.astimezone(TIME_ZONE).date()
     active = semester.needs_public_index(today)
     ended = semester.end < today and not active
     settled = ended and today - semester.end > RECENT_TERM_WINDOW
     previous = _previous_snapshot(store, semester.id)
+    recheck_index = _index_needs_retry(previous, now, newer_diverging_curriculum_at)
     try_curriculum = (
         not requested
         and settled
         and verified_curriculum
+        and not recheck_index
         and previous.get("lesson_index_source") not in ("cached", "unavailable")
     )
     if (
         not requested
         and settled
         and _can_reuse(previous, _lesson_signature(cached_index), semester, now)
-        and not _index_needs_retry(previous, now)
+        and not recheck_index
         and (previous.get("lesson_index_source") != "curriculum" or try_curriculum)
     ):
         return True
@@ -674,11 +721,21 @@ async def refresh_catalog_semester_details(
             if term.start <= today
             and (term.needs_public_index(today) or term.id in indexes)
         ]
-    verified_curriculum = (
-        _verified_curriculum_terms(store, curriculum_indexes) - public_indexes.keys()
+    curriculum_times = (
+        _verified_curriculum_times(store, curriculum_indexes, now)
         if semester_ids is None
-        else set()
+        else {}
     )
+    public_times = _stored_index_times(
+        store, CATALOG_PUBLIC_LESSONS, public_indexes, now
+    )
+    diverging_newer_curriculum = {
+        term_id: observed_at
+        for term_id, observed_at in curriculum_times.items()
+        if term_id in public_indexes
+        and curriculum_indexes[term_id] != public_indexes[term_id]
+        and (term_id not in public_times or observed_at > public_times[term_id])
+    }
     if not selected:
         raise ValueError("Public semester index provided no active or cached semesters")
     failures: list[int] = []
@@ -693,7 +750,11 @@ async def refresh_catalog_semester_details(
                 indexes.get(semester.id, {}),
                 now,
                 requested=semester_ids is not None,
-                verified_curriculum=semester.id in verified_curriculum,
+                verified_curriculum=semester.id in curriculum_times
+                and semester.id not in public_indexes,
+                newer_diverging_curriculum_at=diverging_newer_curriculum.get(
+                    semester.id
+                ),
             )
             if not available:
                 failures.append(semester.id)

@@ -8,12 +8,14 @@ from unittest.mock import patch
 import httpx
 
 from src.catalog_groups import (
+    _CATALOG_URL,
     CATALOG_GROUP_ENDPOINTS,
     CATALOG_GROUP_ENTRIES,
     CATALOG_GROUP_MEMBERS,
     CATALOG_GROUPS,
     _CatalogEntry,
     _entry_sources,
+    _live_entries,
     refresh_catalog_groups,
 )
 from src.sqlite_store import SQLiteModelStore
@@ -22,21 +24,62 @@ from src.utils.auth import RequestSession
 _COURSE_PREFIX = "/api/teach/course/"
 
 
+def browser_bundle(entries: tuple[_CatalogEntry, ...]) -> str:
+    kind_map = {"public": "generic", "quality": "quality", "department": "school"}
+    view = [
+        {
+            "code": entry.route_key,
+            "id": "quality"
+            if entry.source_kind == "quality"
+            else "+".join(entry.source_ids),
+            "type": kind_map[entry.source_kind],
+            "name": {"cn": entry.name_cn, "en": entry.name_en},
+            "desc": {"cn": "", "en": ""},
+        }
+        for entry in entries
+    ]
+    return (
+        f"let routes = {json.dumps(view, ensure_ascii=False)};"
+        + """
+function list(kind, route) {
+    let endpoint;
+    switch (kind) {
+        case 'school': endpoint='department'; break;
+        case 'generic': endpoint='public'; break;
+        case 'quality': endpoint='quality'; break;
+    }
+    if (kind==="generic") {
+        let ids=routes.find(x=>x.code===route).id.split("+");
+        return ids.map(id=>get(`/api/teach/course/${endpoint}/${id}`));
+    }
+    if (kind==="school") {
+        let ids=routes.find(x=>x.code===route).id.split("+");
+        return ids.map(id=>get(`/api/teach/course/department/${id}`));
+    }
+    return get(`/api/teach/course/${endpoint}`);
+}
+"""
+    )
+
+
 class CatalogGroupsTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.store = SQLiteModelStore(Path(self.temp.name) / "group.sqlite")
         self.addCleanup(self.store.close)
+        self.entries = (
+            _CatalogEntry("ma", "public", ("43",), "数学类", "Mathematics"),
+            _CatalogEntry("pe", "public", ("66",), "体育类", "Physical Education"),
+            _CatalogEntry("001", "department", ("2", "6"), "数学学院", "Math"),
+            _CatalogEntry("other", "department", ("2",), "另一分类", "Other"),
+            _CatalogEntry("quality", "quality", ("",), "综合素质类", "Quality"),
+        )
+        self.browser_asset = "/assets/index-reviewed.js"
+        self.browser_source = browser_bundle(self.entries)
+        self.browser_requests: list[str] = []
         self.settings = patch.multiple(
             "src.catalog_groups",
-            _CATALOG_ENTRIES=(
-                _CatalogEntry("ma", "public", ("43",), "数学类", "Mathematics"),
-                _CatalogEntry("pe", "public", ("66",), "体育类", "Physical Education"),
-                _CatalogEntry("001", "department", ("2", "6"), "数学学院", "Math"),
-                _CatalogEntry("other", "department", ("2",), "另一分类", "Other"),
-                _CatalogEntry("quality", "quality", ("",), "综合素质类", "Quality"),
-            ),
             _MAX_CONCURRENT_REQUESTS=2,
             _BATCH_INTERVAL_SECONDS=0,
         )
@@ -75,6 +118,14 @@ class CatalogGroupsTest(unittest.IsolatedAsyncioTestCase):
     async def handle(self, request: httpx.Request) -> httpx.Response:
         self.assertEqual(request.method, "GET")
         self.assertEqual(request.url.host, "catalog.ustc.edu.cn")
+        if str(request.url) == _CATALOG_URL:
+            self.browser_requests.append(str(request.url))
+            return httpx.Response(
+                200, text=f'<script type="module" src="{self.browser_asset}"></script>'
+            )
+        if request.url.path == self.browser_asset:
+            self.browser_requests.append(str(request.url))
+            return httpx.Response(200, text=self.browser_source)
         assert request.url.path.startswith(_COURSE_PREFIX)
         path = request.url.path.removeprefix(_COURSE_PREFIX)
         self.paths.append(path)
@@ -163,6 +214,77 @@ class CatalogGroupsTest(unittest.IsolatedAsyncioTestCase):
             self.responses,
         )
 
+    async def test_new_browser_asset_with_same_routes_is_used_for_provenance(self):
+        await refresh_catalog_groups(self.session, self.store)
+        self.browser_asset = "/assets/index-rebundled.js"
+        await refresh_catalog_groups(self.session, self.store)
+        self.assertEqual(len(self.browser_requests), 4)
+        self.assertEqual(
+            self.store.conn.execute(
+                "SELECT value FROM metadata WHERE key = ?",
+                (f"{CATALOG_GROUPS}_registry_source",),
+            ).fetchone(),
+            ("https://catalog.ustc.edu.cn/assets/index-rebundled.js",),
+        )
+
+    async def test_new_supported_route_is_collected_without_code_updates(self):
+        await refresh_catalog_groups(self.session, self.store)
+        self.paths.clear()
+        extra = _CatalogEntry("new-school", "department", ("99",), "新学院", "New")
+        self.browser_source = browser_bundle((*self.entries, extra))
+        self.responses["department/99"] = {"专业核心": [{"number": "NEW01"}]}
+        await refresh_catalog_groups(self.session, self.store)
+        self.assertIn("department/99", self.paths)
+        self.assertEqual(
+            self.store.conn.execute(
+                f"SELECT source_id, name_cn FROM {CATALOG_GROUP_ENTRIES} "
+                "WHERE route_key='new-school'"
+            ).fetchall(),
+            [("99", "新学院")],
+        )
+        self.assertEqual(
+            self.store.conn.execute(
+                f"SELECT course_code FROM {CATALOG_GROUP_MEMBERS} WHERE source_id='99'"
+            ).fetchall(),
+            [("NEW01",)],
+        )
+
+    async def test_smaller_registry_and_duplicate_route_keep_last_good_data(self):
+        await refresh_catalog_groups(self.session, self.store)
+        old = list(self.store.conn.iterdump())
+        self.paths.clear()
+        for entries, message in (
+            (tuple(x for x in self.entries if x.route_key != "other"), "shrank"),
+            ((*self.entries, self.entries[0]), "Duplicate"),
+        ):
+            self.browser_source = browser_bundle(entries)
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    await refresh_catalog_groups(self.session, self.store)
+                self.assertEqual(self.paths, [])
+                self.assertEqual(list(self.store.conn.iterdump()), old)
+
+    async def test_changed_endpoint_dispatch_fails_before_group_requests(self):
+        self.browser_source = self.browser_source.replace(
+            "course/department/", "course/alternative/"
+        )
+        with self.assertRaisesRegex(ValueError, "Cannot verify .* endpoint paths"):
+            await refresh_catalog_groups(self.session, self.store)
+        self.assertEqual(self.paths, [])
+
+    async def test_runtime_mutation_of_browser_table_is_rejected(self):
+        self.browser_source += 'routes.push({code:"runtime-added"});'
+        with self.assertRaisesRegex(ValueError, "static school catalog route table"):
+            await refresh_catalog_groups(self.session, self.store)
+        self.assertEqual(self.paths, [])
+
+    async def test_unreviewed_cross_origin_module_is_not_fetched(self):
+        self.browser_asset = "https://example.invalid/index.js"
+        with self.assertRaisesRegex(ValueError, "unexpected origin"):
+            await refresh_catalog_groups(self.session, self.store)
+        self.assertEqual(self.browser_requests, [_CATALOG_URL])
+        self.assertEqual(self.paths, [])
+
     async def test_bad_response_does_not_replace_previous_snapshot(self) -> None:
         await refresh_catalog_groups(self.session, self.store)
         original = list(self.store.conn.iterdump())
@@ -230,21 +352,27 @@ class CatalogGroupsTest(unittest.IsolatedAsyncioTestCase):
 
 
 class OfficialRouteRegistryTest(unittest.TestCase):
-    def test_groups_include_compound_routes_and_vetted_department_ids(self) -> None:
-        entries = [entry for rows in _entry_sources().values() for entry in rows]
-        routes = {entry.route_key for entry in entries}
-        self.assertEqual(len(routes), 23)
-        self.assertEqual(len(_entry_sources()), 68)
-        for key, kind, codes in [
-            ("cs+es+in", "public", ["49", "41", "47", "102"]),
-            ("pe", "public", ["66"]),
-            ("001", "department", ["2", "5", "6", "61"]),
-            ("208", "department", ["91", "18", "43", "46"]),
-            ("quality", "quality", [""]),
-        ]:
-            route = sorted(
-                (entry for entry in entries if entry.route_key == key),
+    def test_known_compound_routes_keep_the_order_of_official_ids(self) -> None:
+        official_examples = (
+            _CatalogEntry(
+                "cs+es+in", "public", ("49", "41", "47", "102"), "计算机类", "CS"
+            ),
+            _CatalogEntry(
+                "208", "department", ("91", "18", "43", "46"), "地空学院", "Earth"
+            ),
+            _CatalogEntry("quality", "quality", ("",), "综合素质类", "Quality"),
+        )
+        parsed = _live_entries(browser_bundle(official_examples))
+        self.assertEqual(parsed, official_examples)
+        entries = [entry for rows in _entry_sources(parsed).values() for entry in rows]
+        for example in official_examples:
+            actual = sorted(
+                (entry for entry in entries if entry.route_key == example.route_key),
                 key=lambda entry: entry.source_position,
             )
-            self.assertEqual({entry.source_kind for entry in route}, {kind})
-            self.assertEqual([entry.source_id for entry in route], codes)
+            self.assertEqual(
+                {entry.source_kind for entry in actual}, {example.source_kind}
+            )
+            self.assertEqual(
+                tuple(entry.source_id for entry in actual), example.source_ids
+            )

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from itertools import batched
 from typing import Literal
+from urllib.parse import urljoin, urlsplit
 
 from pydantic import BaseModel, RootModel
 
@@ -21,7 +24,7 @@ CATALOG_GROUPS = "catalog_teach_course_groups"
 CATALOG_GROUP_MEMBERS = "catalog_teach_course_group_members"
 
 _COURSE_URL = "https://catalog.ustc.edu.cn/api/teach/course"
-_REGISTRY_SOURCE_URL = "https://catalog.ustc.edu.cn/assets/index-DeAsVxMB.js"
+_CATALOG_URL = "https://catalog.ustc.edu.cn/catalog"
 _MAX_CONCURRENT_REQUESTS = 3
 _BATCH_INTERVAL_SECONDS = 0.15
 
@@ -37,126 +40,172 @@ class _CatalogEntry:
     name_en: str
 
 
-# Vetted against the official browser's catalog route registry on 2026-11-20.
-# The keys after /catalog/ are UI routes. The ordered tuples are endpoint
-# identifiers, including compound entries; they are not department codes.
-_CATALOG_ENTRIES = (
-    _CatalogEntry("ma", "public", ("43",), "数学类", "Mathematics"),
-    _CatalogEntry("ph", "public", ("45",), "物理类", "Physics"),
-    _CatalogEntry("fl", "public", ("59",), "英语类", "Foreign Language"),
-    _CatalogEntry(
-        "hs+ps", "public", ("58", "63"), "人文、思政类", "Humanities & Politics"
-    ),
-    _CatalogEntry("pe", "public", ("66",), "体育类", "Physical Education"),
-    _CatalogEntry(
-        "cs+es+in",
-        "public",
-        ("49", "41", "47", "102"),
-        "计算机、电子类",
-        "Computer & Electronics",
-    ),
-    _CatalogEntry(
-        "ch+ms+bi", "public", ("44", "54", "53"), "化学、生物类", "Chemistry & Biology"
-    ),
-    _CatalogEntry(
-        "ge+gp+ae+en",
-        "public",
-        ("50", "52", "55", "46"),
-        "地球、环境类",
-        "Earth & Environmental",
-    ),
-    _CatalogEntry("quality", "quality", ("",), "综合素质类", "Comprehensive Abilities"),
-    _CatalogEntry(
-        "001",
-        "department",
-        ("2", "5", "6", "61"),
-        "数学科学学院",
-        "School of Mathematical Sciences",
-    ),
-    _CatalogEntry(
-        "203",
-        "department",
-        ("87", "56", "62", "63", "77", "100", "122"),
-        "物理学院",
-        "School of Physical Sciences",
-    ),
-    _CatalogEntry(
-        "204",
-        "department",
-        ("88", "71", "72", "73"),
-        "管理学院",
-        "School of Management",
-    ),
-    _CatalogEntry(
-        "206",
-        "department",
-        ("89", "57", "68", "70", "74", "75", "182"),
-        "化学与材料科学学院",
-        "School of Chemistry and Materials Science",
-    ),
-    _CatalogEntry(
-        "207",
-        "department",
-        ("90", "66", "76", "101", "102"),
-        "生命科学学院",
-        "School of Life Sciences",
-    ),
-    _CatalogEntry(
-        "208",
-        "department",
-        ("91", "18", "43", "46"),
-        "地球和空间科学学院",
-        "School of Earth and Space Sciences",
-    ),
-    _CatalogEntry(
-        "209",
-        "department",
-        ("92", "3", "4", "69", "99"),
-        "工程科学学院",
-        "School of Engineering Science",
-    ),
-    _CatalogEntry(
-        "210",
-        "department",
-        ("93", "23", "65", "67", "78"),
-        "信息科学技术学院",
-        "School of Information Science and Technology",
-    ),
-    _CatalogEntry(
-        "211",
-        "department",
-        ("94", "58", "80"),
-        "人文与社会科学学院",
-        "School of Humanities and Social Science",
-    ),
-    _CatalogEntry(
-        "215",
-        "department",
-        ("96", "64"),
-        "计算机科学与技术学院",
-        "School of Computer Science and Technology",
-    ),
-    _CatalogEntry(
-        "216", "department", ("15",), "公共事务学院", "School of Public Affairs"
-    ),
-    _CatalogEntry(
-        "221",
-        "department",
-        ("146",),
-        "网络空间安全学院",
-        "School of Cyberspace Security",
-    ),
-    _CatalogEntry(
-        "229", "department", ("142",), "大数据学院", "School of Data Science"
-    ),
-    _CatalogEntry(
-        "910",
-        "department",
-        ("145",),
-        "生命科学与医学部",
-        "School of Life Sciences and Medicine",
-    ),
+# Parse only the browser's static route table and endpoint dispatch. Do not
+# execute JavaScript or use the broader college tree as a substitute registry.
+_IDENTIFIER = r"[A-Za-z_$][\w$]*"
+_KIND_CASE = (
+    rf"""case\s*["'](generic|quality|school)["']\s*:\s*"""
+    rf"""({_IDENTIFIER})\s*=\s*["'](public|quality|department)["']\s*;"""
+    r"\s*break\s*;?"
 )
+_DISPATCH = re.compile(
+    rf"switch\s*\(\s*{_IDENTIFIER}\s*\)\s*\{{"
+    rf"(?P<cases>(?:\s*(?:{_KIND_CASE})){{3}})"
+)
+_DISPATCH_CASE = re.compile(_KIND_CASE)
+_ROUTE_LOOKUP = re.compile(
+    rf"(?P<table>{_IDENTIFIER})\.find\(\s*\(?\s*(?P<entry>{_IDENTIFIER})\s*\)?\s*"
+    rf"""=>\s*(?P=entry)\.code\s*===\s*{_IDENTIFIER}\s*\)\.id\.split\(["']\+["']\)"""
+)
+_JS_LITERAL_TOKEN = re.compile(
+    rf'\s*(?:"(?:[^"\\]|\\.)*"|({_IDENTIFIER})(?=\s*:)|[{{}}\[\]:,])'
+)
+_SOURCE_KINDS: dict[str, SourceKind] = {
+    "generic": "public",
+    "school": "department",
+    "quality": "quality",
+}
+
+
+class _ModuleScripts(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sources: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        fields = dict(attrs)
+        if tag == "script" and fields.get("type") == "module" and fields.get("src"):
+            self.sources.append(fields["src"] or "")
+
+
+def _browser_origin(url: str) -> bool:
+    actual = urlsplit(url)
+    return (actual.scheme, actual.netloc) == ("https", "catalog.ustc.edu.cn")
+
+
+def _literal_array(script: str, start: int) -> list:
+    tokens: list[str] = []
+    depth = 0
+    # The reviewed array is about 3 KiB. Bound the literal parser if the
+    # browser starts constructing routes with arbitrary JavaScript.
+    end = start + 65_536
+    while match := _JS_LITERAL_TOKEN.match(script, start, end):
+        token = match[0].strip()
+        tokens.append(json.dumps(match[1]) if match[1] is not None else token)
+        start = match.end()
+        if token == "[":
+            depth += 1
+        elif token == "]":
+            depth -= 1
+            if depth == 0:
+                if not re.match(r"\s*[,;}]", script[start : start + 32]):
+                    break
+                return json.loads("".join(tokens))
+    raise ValueError("The school catalog route table is no longer a static literal")
+
+
+def _live_entries(script: str) -> tuple[_CatalogEntry, ...]:
+    dispatches = list(_DISPATCH.finditer(script))
+    if len(dispatches) != 1:
+        raise ValueError("Cannot verify the school catalog browser's endpoint dispatch")
+    dispatch = dispatches[0]
+    cases = _DISPATCH_CASE.findall(dispatch["cases"])
+    if {kind: endpoint for kind, _, endpoint in cases} != _SOURCE_KINDS:
+        raise ValueError("Unexpected school catalog endpoint kind or duplicate case")
+    kind_variables = {variable for _, variable, _ in cases}
+    if len(kind_variables) != 1:
+        raise ValueError("Cannot verify the school catalog endpoint selection")
+    selection = script[dispatch.end() : dispatch.end() + 2_500]
+    lookups = list(_ROUTE_LOOKUP.finditer(selection))
+    routes = {match["table"] for match in lookups}
+    endpoint_kind = re.escape(kind_variables.pop())
+    stem = rf"/api/teach/course/\$\{{{endpoint_kind}\}}"
+    if (
+        len(lookups) != 2
+        or len(routes) != 1
+        or not re.search(stem + rf"/\$\{{{_IDENTIFIER}\}}\x60", selection)
+        or not re.search(stem + r"\x60", selection)
+        or not re.search(
+            rf"/api/teach/course/department/\$\{{{_IDENTIFIER}\}}\x60", selection
+        )
+    ):
+        raise ValueError("Cannot verify the school catalog browser's endpoint paths")
+    table = re.escape(routes.pop())
+    assignments = list(re.finditer(rf"(?<![\w$]){table}\s*=(?![=>])\s*", script))
+    mutation = re.search(
+        rf"(?<![\w$]){table}\s*\.\s*"
+        r"(?:push|pop|splice|shift|unshift|fill|reverse|sort|copyWithin)\s*\(",
+        script,
+    )
+    if len(assignments) != 1 or mutation:
+        raise ValueError("Cannot identify one static school catalog route table")
+    entries = []
+    known_keys: set[str] = set()
+    for row in _literal_array(script, assignments[0].end()):
+        try:
+            kind = _SOURCE_KINDS[row["type"]]
+            code, endpoint = row["code"], row["id"]
+            name_cn, name_en = row["name"]["cn"], row["name"]["en"]
+        except (KeyError, TypeError) as error:
+            raise ValueError("Invalid row in the school catalog route table") from error
+        if not all(
+            isinstance(value, str) and value
+            for value in (code, endpoint, name_cn, name_en)
+        ):
+            raise ValueError(
+                "Invalid identity or label in the school catalog route table"
+            )
+        if not re.fullmatch(r"[A-Za-z0-9]+(?:[+_-][A-Za-z0-9]+)*", code):
+            raise ValueError(f"Invalid school catalog route {code!r}")
+        if code in known_keys:
+            raise ValueError(f"Duplicate school catalog route {code!r}")
+        known_keys.add(code)
+        if kind == "quality":
+            if code != "quality" or endpoint != "quality":
+                raise ValueError(
+                    "Unexpected quality-course route in the school catalog"
+                )
+            source_ids = ("",)
+        else:
+            if not re.fullmatch(r"[0-9]+(?:\+[0-9]+)*", endpoint):
+                raise ValueError(
+                    f"Invalid source IDs for school catalog route {code!r}"
+                )
+            source_ids = tuple(endpoint.split("+"))
+            if len(set(source_ids)) != len(source_ids):
+                raise ValueError(f"Duplicate source IDs for catalog route {code!r}")
+        entries.append(_CatalogEntry(code, kind, source_ids, name_cn, name_en))
+    if {entry.source_kind for entry in entries} != set(_SOURCE_KINDS.values()):
+        raise ValueError("The school catalog route table omits a classification kind")
+    return tuple(entries)
+
+
+async def _discover_browser_registry(
+    session: RequestSession,
+) -> tuple[str, tuple[_CatalogEntry, ...]]:
+    page = await session.get(_CATALOG_URL, timeout=30_000, transient_retries=1)
+    if not _browser_origin(page.url):
+        raise ValueError("School catalog page redirected outside the catalog origin")
+    parser = _ModuleScripts()
+    parser.feed(await page.text())
+    if len(parser.sources) != 1:
+        raise ValueError("Cannot identify one module script on the school catalog page")
+    script_url = urljoin(page.url, parser.sources[0])
+    if not _browser_origin(script_url):
+        raise ValueError("School catalog module script has an unexpected origin")
+    response = await session.get(script_url, timeout=30_000, transient_retries=1)
+    if not _browser_origin(response.url):
+        raise ValueError(
+            "School catalog module script redirected outside the catalog origin"
+        )
+    try:
+        actual = _live_entries(await response.text())
+    except ValueError as error:
+        raise ValueError(
+            f"Cannot verify catalog routes from {response.url}: {error}"
+        ) from error
+    return response.url, actual
+
 
 # The browser translates these source department group keys before merging.
 _DEPARTMENT_GROUP_LABELS = {
@@ -309,9 +358,11 @@ def _parse_source(source: _Source, payload: object) -> _SourceSnapshot:
     return snapshot
 
 
-def _entry_sources() -> dict[_Source, list[_EntryRow]]:
+def _entry_sources(
+    entries: tuple[_CatalogEntry, ...],
+) -> dict[_Source, list[_EntryRow]]:
     sources: dict[_Source, list[_EntryRow]] = defaultdict(list)
-    for route_position, entry in enumerate(_CATALOG_ENTRIES):
+    for route_position, entry in enumerate(entries):
         for source_position, source_id in enumerate(entry.source_ids):
             source = _Source(entry.source_kind, source_id)
             sources[source].append(
@@ -327,6 +378,34 @@ def _entry_sources() -> dict[_Source, list[_EntryRow]]:
     return sources
 
 
+def _check_scope(
+    store: SQLiteModelStore,
+    entries: tuple[_CatalogEntry, ...],
+    sources: Mapping[_Source, list[_EntryRow]],
+) -> None:
+    if not store.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (CATALOG_GROUP_ENTRIES,),
+    ).fetchone():
+        return
+    previous = store.conn.execute(
+        f"SELECT source_kind, COUNT(DISTINCT route_key), COUNT(DISTINCT source_id), "
+        f"COUNT(*) FROM {CATALOG_GROUP_ENTRIES} GROUP BY source_kind"
+    )
+    for kind, old_routes, old_sources, old_links in previous:
+        routes = sum(entry.source_kind == kind for entry in entries)
+        endpoints = [source for source in sources if source.source_kind == kind]
+        links = sum(len(sources[source]) for source in endpoints)
+        if routes < old_routes or len(endpoints) < old_sources or links < old_links:
+            raise ValueError(
+                f"School catalog registry shrank for {kind}: "
+                f"routes {old_routes} → {routes}, "
+                f"endpoints {old_sources} → {len(endpoints)}, "
+                f"links {old_links} → {links}. "
+                "Previous catalog groups were kept."
+            )
+
+
 async def _fetch_source(session: RequestSession, source: _Source) -> _SourceSnapshot:
     payload = await session.get_json(source.url, timeout=60_000, transient_retries=1)
     return _parse_source(source, payload)
@@ -336,6 +415,7 @@ def _persist(
     store: SQLiteModelStore,
     sources: Mapping[_Source, list[_EntryRow]],
     snapshots: list[_SourceSnapshot],
+    registry_url: str,
 ) -> None:
     with store.conn:
         for table, model in (
@@ -354,7 +434,7 @@ def _persist(
         store.delete_fetches(old_fetches)
 
         counts: dict[str, int | str] = {
-            f"{CATALOG_GROUPS}_registry_source": _REGISTRY_SOURCE_URL
+            f"{CATALOG_GROUPS}_registry_source": registry_url
         }
         for snapshot in snapshots:
             source = snapshot.source
@@ -391,7 +471,9 @@ async def refresh_catalog_groups(
     session: RequestSession, store: SQLiteModelStore
 ) -> None:
     """Fetch each classification endpoint once and replace the snapshot as a unit."""
-    sources = _entry_sources()
+    registry_url, entries = await _discover_browser_registry(session)
+    sources = _entry_sources(entries)
+    _check_scope(store, entries, sources)
     snapshots: list[_SourceSnapshot] = []
     for sources_batch in batched(sources, _MAX_CONCURRENT_REQUESTS, strict=False):
         if snapshots:
@@ -403,4 +485,4 @@ async def refresh_catalog_groups(
         )
     if not snapshots or not any(snapshot.members for snapshot in snapshots):
         raise ValueError("The official course browser returned no group memberships")
-    _persist(store, sources, snapshots)
+    _persist(store, sources, snapshots, registry_url)

@@ -1,7 +1,7 @@
 import asyncio
 import json
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import httpx
@@ -93,9 +93,24 @@ class CatalogSemesterDetailsTest(unittest.IsolatedAsyncioTestCase):
         self.history_status = 200
         self.history_index_status = 200
         self.excluded_profiles: list[dict] = []
+        self.profile_updates: dict[str, dict] = {}
         clock = patch("src.catalog_semester_details.datetime", wraps=datetime)
-        clock.start().now.return_value = NOW
+        self.clock = clock.start()
+        self.clock.now.return_value = NOW
         self.addCleanup(clock.stop)
+        record_fetch = self.store.record_fetch
+
+        def record_timed_fetch(**kwargs):
+            fetch_id = record_fetch(**kwargs)
+            self.store.conn.execute(
+                "UPDATE upstream_fetches SET fetched_at = ? WHERE id = ?",
+                (self.clock.now.return_value.isoformat(), fetch_id),
+            )
+            return fetch_id
+
+        timestamp = patch.object(self.store, "record_fetch", record_timed_fetch)
+        timestamp.start()
+        self.addCleanup(timestamp.stop)
         cadence = patch.multiple(
             "src.catalog_semester_details",
             REQUEST_INTERVAL_SECONDS=0,
@@ -139,12 +154,22 @@ class CatalogSemesterDetailsTest(unittest.IsolatedAsyncioTestCase):
             and row["code"] not in self.missing
             and (len(codes) == 1 or row["code"] not in self.temporary_omit)
         ]
+        for row in result:
+            row.update(self.profile_updates.get(row["code"], {}))
         if self.wrong_id and result:
             result[-1]["id"] += 1
         return httpx.Response(200, json=result)
 
     def seed_known_history(self, *, verified: bool = False) -> None:
         with self.store.conn:
+            old = [
+                fetch_id
+                for (fetch_id,) in self.store.conn.execute(
+                    "SELECT id FROM upstream_fetches WHERE source = ? AND context = ?",
+                    (CATALOG_LESSONS, f"semester_id={HISTORY}"),
+                )
+            ]
+            self.store.delete_fetches(old)
             fetch_id = self.store.record_fetch(
                 source=CATALOG_LESSONS,
                 method="GET",
@@ -328,6 +353,109 @@ class CatalogSemesterDetailsTest(unittest.IsolatedAsyncioTestCase):
             ],
             [5, 7],
         )
+
+    async def test_settled_profile_refreshes_materials_with_unchanged_identities(self):
+        self.seed_known_history(verified=True)
+        await refresh_catalog_semester_details(self.session, self.store)
+        before = self.metadata(HISTORY)
+        updated_description = {"cn": "更新后的教学大纲", "en": None}
+        self.profile_updates["OLD01.01"] = {"desc": updated_description}
+
+        self.clock.now.return_value = NOW + timedelta(days=30, seconds=-1)
+        self.get_requests.clear()
+        self.post_requests.clear()
+        await refresh_catalog_semester_details(self.session, self.store)
+        self.assertNotIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
+        self.assertFalse(any(term == HISTORY for term, _ in self.post_requests))
+
+        self.clock.now.return_value = NOW + timedelta(days=30)
+        await refresh_catalog_semester_details(self.session, self.store)
+        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
+        self.assertIn((HISTORY, ["MA01.01", "OLD01.01"]), self.post_requests)
+        after = self.metadata(HISTORY)
+        self.assertEqual(after["lesson_signature"], before["lesson_signature"])
+        self.assertEqual(after["lesson_index_source"], "public")
+        row = self.store.conn.execute(
+            f"SELECT payload_json FROM {CATALOG_LESSON_INFOS} "
+            "WHERE semester_id = ? AND code = 'OLD01.01'",
+            (str(HISTORY),),
+        ).fetchone()
+        self.assertEqual(json.loads(row[0])["desc"], updated_description)
+
+    async def test_settled_authoritative_recheck_discovers_sections_outside_archive(
+        self,
+    ):
+        self.seed_known_history(verified=True)
+        await refresh_catalog_semester_details(self.session, self.store)
+        self.assertNotIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
+        self.history_index.append(lesson(8, "NEW01.01"))
+        self.clock.now.return_value = NOW + timedelta(days=30)
+        self.get_requests.clear()
+        self.post_requests.clear()
+        await refresh_catalog_semester_details(self.session, self.store)
+        self.assertEqual(self.get_requests.count(f"{LESSON_LIST_URL}/{HISTORY}"), 1)
+        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
+        self.assertEqual(self.metadata(HISTORY)["lesson_profile_rows"], 3)
+        self.assertEqual(
+            [
+                row[1]
+                for row in self.rows(CATALOG_LESSON_INFOS)
+                if row[2] == str(HISTORY)
+            ],
+            ["MA01.01", "OLD01.01", "NEW01.01"],
+        )
+
+    async def test_newer_curriculum_rechecks_public_index_inside_freshness_window(self):
+        self.seed_known_history(verified=True)
+        await refresh_catalog_semester_details(
+            self.session, self.store, semester_ids=[HISTORY]
+        )
+        self.clock.now.return_value = NOW + timedelta(days=1)
+        self.history_index.append(lesson(8, "NEW01.01"))
+        self.seed_known_history(verified=True)
+        self.get_requests.clear()
+        self.post_requests.clear()
+        await refresh_catalog_semester_details(self.session, self.store)
+        self.assertEqual(self.get_requests.count(f"{LESSON_LIST_URL}/{HISTORY}"), 1)
+        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
+        self.assertEqual(
+            {
+                code
+                for term, codes in self.post_requests
+                if term == HISTORY
+                for code in codes
+            },
+            {"MA01.01", "NEW01.01", "OLD01.01"},
+        )
+        self.assertTrue(
+            any(
+                row[:3] == (8, "NEW01.01", str(HISTORY))
+                for row in self.rows(CATALOG_LESSON_INFOS)
+            )
+        )
+
+    async def test_newer_curriculum_does_not_replace_a_disagreeing_live_index(self):
+        self.seed_known_history(verified=True)
+        await refresh_catalog_semester_details(
+            self.session, self.store, semester_ids=[HISTORY]
+        )
+        previous = self.rows(CATALOG_LESSON_INFOS)
+        self.clock.now.return_value = NOW + timedelta(days=1)
+        self.history_index.append(lesson(8, "ARCHIVE01.01"))
+        self.seed_known_history(verified=True)
+        self.history_index.pop()
+        self.get_requests.clear()
+        self.post_requests.clear()
+        await refresh_catalog_semester_details(self.session, self.store)
+        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
+        self.assertFalse(any(term == HISTORY for term, _ in self.post_requests))
+        self.assertEqual(
+            [row for row in self.rows(CATALOG_LESSON_INFOS) if row[2] == str(HISTORY)],
+            previous,
+        )
+        self.get_requests.clear()
+        await refresh_catalog_semester_details(self.session, self.store)
+        self.assertNotIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
 
     async def test_success_metadata_without_a_successful_fetch_uses_live_index(self):
         self.seed_known_history(verified=True)
