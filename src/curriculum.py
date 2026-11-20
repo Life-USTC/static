@@ -325,10 +325,9 @@ def _catalog_lesson_chunk_count(
     if not store.has_table(CATALOG_LESSONS):
         return None
     row = store.conn.execute(
-        "SELECT COUNT(lesson.store_id) FROM upstream_fetches fetch "
-        f"LEFT JOIN {CATALOG_LESSONS} lesson ON lesson.fetch_id = fetch.id "
-        "WHERE fetch.source = ? AND fetch.ok = 1 AND fetch.context = ? "
-        "GROUP BY fetch.id ORDER BY fetch.id DESC LIMIT 1",
+        f"SELECT (SELECT COUNT(*) FROM {CATALOG_LESSONS} WHERE fetch_id = fetch.id) "
+        "FROM upstream_fetches fetch WHERE source = ? AND ok = 1 AND context = ? "
+        "ORDER BY id DESC LIMIT 1",
         (CATALOG_LESSONS, f"semester_id={semester_id}"),
     ).fetchone()
     if row is None:
