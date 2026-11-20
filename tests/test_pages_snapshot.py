@@ -41,15 +41,12 @@ class PagesSnapshotTest(unittest.TestCase):
         self.assertEqual(raw.read_bytes(), original)
         self.assertFalse((pages / "contract-report.json").exists())
         with closing(sqlite3.connect(pages / SNAPSHOT_FILENAME)) as db:
-            self.assertEqual(
-                db.execute("SELECT id FROM upstream_fetches").fetchall(), [(1,)]
-            )
-            self.assertEqual(
-                db.execute("SELECT key FROM metadata").fetchall(), [("legacy",)]
-            )
-            self.assertEqual(
-                db.execute("SELECT fetch_id FROM jw_lessons").fetchall(), [(1,)]
-            )
+            for query, expected in (
+                ("SELECT id FROM upstream_fetches", [(1,)]),
+                ("SELECT key FROM metadata", [("legacy",)]),
+                ("SELECT fetch_id FROM jw_lessons", [(1,)]),
+            ):
+                self.assertEqual(db.execute(query).fetchall(), expected, query)
             with self.assertRaises(sqlite3.OperationalError):
                 db.execute("SELECT * FROM catalog_teach_course_infos_desc")
         for source, target in ((pages, restored), (build, legacy)):

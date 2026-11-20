@@ -9,9 +9,9 @@ from typing import Annotated, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, Strict, TypeAdapter
 
-from .catalog_groups import _fetch_in_batches
 from .sqlite_store import SQLiteModelStore
 from .utils.auth import RequestSession
+from .utils.catalog import catalog_json, fetch_in_batches
 
 _SOURCE = "https://catalog.ustc.edu.cn/api/teach"
 PROGRAM_TREE_URL = f"{_SOURCE}/program/tree"
@@ -51,22 +51,6 @@ class Resource(NamedTuple):
     summary_json: str | None = None
 
 
-def _json(value: object, *, sort_keys: bool = False) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=sort_keys,
-        allow_nan=False,
-    )
-
-
-def _object(value: object, label: str) -> dict:
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    return value
-
-
 class _TreeRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
     id: Id
@@ -97,7 +81,7 @@ def _index(tree: object) -> dict[int, PlanSummary]:
         for major in department.majors.values():
             major_summary = major.model_dump(exclude={"programs"}, exclude_unset=True)
             for plan in major.programs:
-                summary = _json(
+                summary = catalog_json(
                     {
                         "department": department_summary,
                         "major": major_summary,
@@ -131,10 +115,13 @@ async def _fetch_resources(
 ) -> dict[int, Resource]:
     async def fetch(id_: int) -> tuple[int, Resource]:
         address = f"{url}/{id_}"
-        return id_, Resource(_json(_object(await _fetch(session, address), address)))
+        payload = await _fetch(session, address)
+        if not isinstance(payload, dict):
+            raise ValueError(f"{address} must return a JSON object")
+        return id_, Resource(catalog_json(payload))
 
     return dict(
-        await _fetch_in_batches(
+        await fetch_in_batches(
             fetch,
             sorted(ids),
             FETCH_CONCURRENCY,
@@ -147,9 +134,7 @@ def _cached(
     store: SQLiteModelStore, table: str, id_column: str, cutoff: datetime
 ) -> dict[int, Resource]:
     conn = store.conn
-    if not conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
-    ).fetchone():
+    if not store.has_table(table):
         return {}
 
     summary = "data.summary_json" if table == PROGRAM_INFO_TABLE else "NULL"
@@ -176,13 +161,12 @@ def _memberships(
     for node in nodes:
         module = node.module
         module_path = (*path, module.id)
-        path_json = _json(module_path)
+        path_json = catalog_json(module_path)
         for course_position, item in enumerate(module.courses or ()):
-            source_course = item.get("course")
-            if source_course is None:
-                continue
-            course = _object(source_course, "module membership course")
-            code = course.get("code")
+            course = item.get("course")
+            if course is not None and not isinstance(course, dict):
+                raise ValueError("Study plan membership course must be an object")
+            code = course.get("code") if course else None
             if code is None or code == "":
                 continue
             if not isinstance(code, str):
@@ -195,7 +179,7 @@ def _memberships(
                 path_json,
                 course_position,
                 item.get("compulsory"),
-                _json(item.get("terms")),
+                catalog_json(item.get("terms")),
             )
         yield from _memberships(
             node.children or (), public_modules, module_path, public_module_id
@@ -249,21 +233,15 @@ def _save_resources(
         ((id_,) for id_ in previous.keys() - resources.keys()),
     )
 
-    def changed_rows():
-        for id_, resource in resources.items():
-            if resource.fetch_id is None:
-                fetch = store.record_fetch(
-                    source=table, method="GET", url=f"{url}/{id_}"
-                )
-                yield (
-                    id_,
-                    fetch,
-                    *(index[id_] if index else ()),
-                    resource.payload_json,
-                )
-
-    slots = "?, ?, ?" if index is None else "?, ?, ?, ?, ?, ?, ?, ?"
-    conn.executemany(f"INSERT OR REPLACE INTO {table} VALUES ({slots})", changed_rows())
+    for id_, resource in resources.items():
+        if resource.fetch_id is None:
+            fetch_id = store.record_fetch(
+                source=table, method="GET", url=f"{url}/{id_}"
+            )
+            summary = index[id_] if index is not None else ()
+            row = (id_, fetch_id, *summary, resource.payload_json)
+            slots = ", ".join("?" for _ in row)
+            conn.execute(f"INSERT OR REPLACE INTO {table} VALUES ({slots})", row)
 
 
 async def refresh_study_plans(session: RequestSession, store: SQLiteModelStore) -> None:
@@ -292,23 +270,23 @@ async def refresh_study_plans(session: RequestSession, store: SQLiteModelStore) 
     }
     pending = {ref for roots in plan_roots.values() for ref in _references(roots)}
     modules, module_payloads = {}, {}
+    fresh_modules = {id_ for id_, resource in old_modules.items() if resource.fresh}
     while pending:
-        reusable = {
-            id_: old_modules[id_]
-            for id_ in pending
-            if id_ in old_modules and old_modules[id_].fresh
-        }
-        missing = pending - reusable.keys()
-        batch = reusable | await _fetch_resources(session, COURSE_MODULE_URL, missing)
+        fresh = {id_: old_modules[id_] for id_ in pending if id_ in fresh_modules}
+        batch = fresh | await _fetch_resources(
+            session, COURSE_MODULE_URL, pending - fresh.keys()
+        )
         modules.update(batch)
-        decoded = {
-            id_: _Node.model_validate_json(resource.payload_json)
-            for id_, resource in batch.items()
-        }
-        if any(id_ != node.module.id for id_, node in decoded.items()):
-            raise ValueError("Public module response does not match the requested ID")
-        module_payloads.update(decoded)
-        pending = set(_references(decoded.values())) - modules.keys()
+        for id_, resource in batch.items():
+            node = _Node.model_validate_json(resource.payload_json)
+            if node.module.id != id_:
+                raise ValueError(
+                    "Public module response does not match the requested ID"
+                )
+            module_payloads[id_] = node
+        pending = (
+            set(_references(module_payloads[id_] for id_ in batch)) - modules.keys()
+        )
 
     changed = old_programs != programs or old_modules != modules
     conn = store.conn
@@ -320,7 +298,7 @@ async def refresh_study_plans(session: RequestSession, store: SQLiteModelStore) 
         )
         conn.execute(
             f"INSERT OR REPLACE INTO {PROGRAM_TREE_TABLE} VALUES (1, ?, ?)",
-            (tree_fetch, _json(tree)),
+            (tree_fetch, catalog_json(tree)),
         )
         if changed:
             conn.execute(f"DELETE FROM {PROGRAM_COURSES_TABLE}")
@@ -344,11 +322,9 @@ async def refresh_study_plans(session: RequestSession, store: SQLiteModelStore) 
                 f"AND id NOT IN (SELECT fetch_id FROM {table})",
                 (table,),
             )
-        counts = {PROGRAM_INFO_TABLE: len(programs), COURSE_MODULE_TABLE: len(modules)}
-        counts[PROGRAM_COURSES_TABLE] = conn.execute(
-            f"SELECT COUNT(*) FROM {PROGRAM_COURSES_TABLE}"
-        ).fetchone()[0]
-        store.put_metadata({f"{table}_count": n for table, n in counts.items()})
+        store.update_table_counts(
+            (PROGRAM_INFO_TABLE, COURSE_MODULE_TABLE, PROGRAM_COURSES_TABLE)
+        )
     except BaseException:
         conn.execute("ROLLBACK TO public_study_plans")
         raise

@@ -10,7 +10,7 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 | 产物 | 内容 |
 |------|------|
 | `life-ustc-static.sqlite.gz` | 完整本地 SQLite 压缩包，包含新增目录资料；增量构建优先恢复此文件 |
-| `life-ustc-static.sqlite` | 兼容下载，包含 规范化后的上游响应（课程 / 课表 / Blackboard 公开课程资料索引等） |
+| `life-ustc-static.sqlite` | 兼容下载，包含规范化后的上游响应（课程 / 课表 / Blackboard 公开课程资料索引等） |
 | `life-ustc-static-guesses.sqlite` | 无法直接从上游键出的推断关系 |
 | `schemas/upstream/*.expected.schema.json` | 从 Pydantic 生成的上游契约 |
 | `rss/` | 清洗后的校内新闻等 XML 订阅 |

@@ -322,37 +322,18 @@ def _jw_schedule_expected_chunk_count_key(semester_id: str) -> str:
 def _catalog_lesson_chunk_count(
     store: SQLiteModelStore, semester_id: str
 ) -> int | None:
-    table_exists = store.conn.execute(
-        """
-        SELECT 1 FROM sqlite_master
-        WHERE type = 'table'
-          AND name = 'catalog_teach_lesson_list_for_teach'
-        """
-    ).fetchone()
-    if table_exists is None:
+    if not store.has_table(CATALOG_LESSONS):
         return None
-
-    fetch = store.conn.execute(
-        """
-        SELECT id FROM upstream_fetches
-        WHERE source = 'catalog_teach_lesson_list_for_teach'
-          AND ok = 1
-          AND context = ?
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (f"semester_id={semester_id}",),
+    row = store.conn.execute(
+        "SELECT COUNT(lesson.store_id) FROM upstream_fetches fetch "
+        f"LEFT JOIN {CATALOG_LESSONS} lesson ON lesson.fetch_id = fetch.id "
+        "WHERE fetch.source = ? AND fetch.ok = 1 AND fetch.context = ? "
+        "GROUP BY fetch.id ORDER BY fetch.id DESC LIMIT 1",
+        (CATALOG_LESSONS, f"semester_id={semester_id}"),
     ).fetchone()
-    if fetch is None:
+    if row is None:
         return None
-
-    lesson_count = store.conn.execute(
-        """
-        SELECT COUNT(*) FROM catalog_teach_lesson_list_for_teach
-        WHERE fetch_id = ?
-        """,
-        (fetch[0],),
-    ).fetchone()[0]
+    lesson_count = row[0]
     return (int(lesson_count) + JW_SCHEDULE_CHUNK_SIZE - 1) // JW_SCHEDULE_CHUNK_SIZE
 
 
@@ -429,17 +410,6 @@ def _has_cached_source_semester(
             """,
         (source, f"semester_id={semester_id}"),
     ).fetchone() == (1, 1)
-
-
-def _delete_source_fetches(store: SQLiteModelStore, source: str) -> None:
-    fetch_ids = [
-        row[0]
-        for row in store.conn.execute(
-            "SELECT id FROM upstream_fetches WHERE source = ?",
-            (source,),
-        )
-    ]
-    store.delete_fetches(fetch_ids)
 
 
 def _delete_cached_semester(
@@ -524,18 +494,6 @@ async def _store_catalog_departments(
     store.put_metadata({"catalog_teach_department_college_tree_count": count})
 
 
-def _delete_cached_exams(store: SQLiteModelStore, semester_id: str) -> None:
-    fetch_ids = [
-        row[0]
-        for row in store.conn.execute(
-            "SELECT id FROM upstream_fetches "
-            "WHERE source = 'catalog_teach_exam_list' AND context = ?",
-            (f"semester_id={semester_id}",),
-        )
-    ]
-    store.delete_fetches(fetch_ids)
-
-
 async def _store_catalog_exams(
     *,
     session: RequestSession,
@@ -561,7 +519,7 @@ async def _store_catalog_exams(
             error, httpx.HTTPStatusError
         ) and error.response.status_code not in {502, 504}:
             raise
-        _delete_cached_exams(store, semester_id)
+        store.delete_source_fetches(CATALOG_EXAMS, context=f"semester_id={semester_id}")
         store.record_fetch(
             source="catalog_teach_exam_list",
             method="GET",
@@ -585,7 +543,7 @@ async def _store_catalog_exams(
     response = TeachExamListResponse.model_validate(payload)
     if response.root is None:
         raise ValueError("Catalog exam response must be a list")
-    _delete_cached_exams(store, semester_id)
+    store.delete_source_fetches(CATALOG_EXAMS, context=f"semester_id={semester_id}")
     context = {"semester_id": semester_id}
     store.store_fetched_response(
         CATALOG_EXAMS, url, response, context=context, row_context=context
@@ -829,11 +787,11 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
         _register_upstream_tables(store)
         previous_course_ids_by_code = _stored_course_ids_by_code(store)
         async with USTCSession() as session:
-            _delete_source_fetches(store, "catalog_teach_semester_list")
+            store.delete_source_fetches(CATALOG_SEMESTERS)
             semesters = await _store_catalog_semesters(
                 session=session, store=store, contracts=contracts
             )
-            _delete_source_fetches(store, "catalog_teach_department_college_tree")
+            store.delete_source_fetches(CATALOG_DEPARTMENTS)
             await _store_catalog_departments(
                 session=session, store=store, contracts=contracts
             )

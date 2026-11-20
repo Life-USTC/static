@@ -29,16 +29,16 @@ def compact(db: sqlite3.Connection) -> None:
     ).fetchall()
     for (table,) in tables:
         db.execute(f"DROP TABLE {_quote_identifier(table)}")
+    db.execute("DELETE FROM upstream_fetches WHERE catalog(source)")
     for (table,) in db.execute("""
         SELECT s.name FROM sqlite_schema s JOIN pragma_table_info(s.name) c
         ON c.name='fetch_id' WHERE s.type='table'
     """):
         if db.execute(
-            f"SELECT 1 FROM {_quote_identifier(table)} WHERE fetch_id IN "
-            "(SELECT id FROM upstream_fetches WHERE catalog(source)) LIMIT 1"
+            f"SELECT 1 FROM {_quote_identifier(table)} WHERE fetch_id NOT IN "
+            "(SELECT id FROM upstream_fetches) LIMIT 1"
         ).fetchone():
-            raise ValueError(f"{table} uses public catalog provenance")
-    db.execute("DELETE FROM upstream_fetches WHERE catalog(source)")
+            raise ValueError(f"{table} contains a missing fetch reference")
     db.create_function(
         "term_metadata", 1, lambda name: bool(name and TERM_METADATA.match(name))
     )

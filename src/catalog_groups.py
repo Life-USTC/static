@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Iterable
-from itertools import batched
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
+from pydantic import BaseModel, Field
 
 from .sqlite_store import SQLiteModelStore
 from .utils.auth import RequestSession
+from .utils.catalog import catalog_json, fetch_in_batches
 
 CATALOG_GROUP_ENTRIES = "catalog_teach_course_group_entries"
 CATALOG_GROUP_ENDPOINTS = "catalog_teach_course_group_endpoints"
@@ -35,6 +34,18 @@ class _CatalogEntry(NamedTuple):
     name_en: str
 
 
+class _RouteName(BaseModel):
+    cn: str = Field(min_length=1)
+    en: str = Field(min_length=1)
+
+
+class _Route(BaseModel):
+    code: str = Field(pattern=r"^[A-Za-z0-9]+(?:[+_-][A-Za-z0-9]+)*$")
+    type: Literal["generic", "quality", "school"]
+    id: str
+    name: _RouteName
+
+
 # Parse only the browser's static route table and endpoint dispatch. Do not
 # execute JavaScript or use the broader college tree as a substitute registry.
 _IDENTIFIER = r"[A-Za-z_$][\w$]*"
@@ -52,9 +63,7 @@ _ROUTE_LOOKUP = re.compile(
     rf"(?P<table>{_IDENTIFIER})\.find\(\s*\(?\s*(?P<entry>{_IDENTIFIER})\s*\)?\s*"
     rf"""=>\s*(?P=entry)\.code\s*===\s*{_IDENTIFIER}\s*\)\.id\.split\(["']\+["']\)"""
 )
-_JS_LITERAL_TOKEN = re.compile(
-    rf'\s*(?:"(?:[^"\\]|\\.)*"|({_IDENTIFIER})(?=\s*:)|[{{}}\[\]:,])'
-)
+_LITERAL_KEYS = re.compile(rf'"(?:[^"\\]|\\.)*"|({_IDENTIFIER})(?=\s*:)')
 _SOURCE_KINDS: dict[str, str] = {
     "generic": "public",
     "school": "department",
@@ -68,21 +77,16 @@ def _browser_origin(url: str) -> bool:
 
 
 def _literal_array(script: str, start: int) -> list:
-    tokens, depth = [], 0
-    end = start + 65_536  # The official registry is about 3 KiB.
-    while match := _JS_LITERAL_TOKEN.match(script, start, end):
-        token = match[0].strip()
-        tokens.append(json.dumps(match[1]) if match[1] is not None else token)
-        start = match.end()
-        if token == "[":
-            depth += 1
-        elif token == "]":
-            depth -= 1
-            if depth == 0:
-                if not re.match(r"\s*[,;}]", script[start : start + 32]):
-                    break
-                return json.loads("".join(tokens))
-    raise ValueError("The school catalog route table is no longer a static literal")
+    # Quote JS object keys while leaving strings (including escaped quotes) intact.
+    # raw_decode stops at the end of the array; trailing JS must be a delimiter.
+    source = script[start : start + 65_536]
+    literal = _LITERAL_KEYS.sub(
+        lambda match: json.dumps(match[1]) if match[1] else match[0], source
+    )
+    rows, end = json.JSONDecoder().raw_decode(literal)
+    if not isinstance(rows, list) or not re.match(r"\s*[,;}]", literal[end:]):
+        raise ValueError("The school catalog route table is no longer a static literal")
+    return rows
 
 
 def _live_entries(script: str) -> tuple[_CatalogEntry, ...]:
@@ -117,36 +121,26 @@ def _live_entries(script: str) -> tuple[_CatalogEntry, ...]:
     )
     if len(assignments) != 1 or mutation:
         raise ValueError("Cannot identify one static school catalog route table")
-    entries = []
-    known_keys: set[str] = set()
+    entries = {}
     for row in _literal_array(script, assignments[0].end()):
-        try:
-            kind = _SOURCE_KINDS[row["type"]]
-            code, endpoint = row["code"], row["id"]
-            name_cn, name_en = row["name"]["cn"], row["name"]["en"]
-        except (KeyError, TypeError) as error:
-            raise ValueError("Invalid row in the school catalog route table") from error
-        if not all(
-            isinstance(v, str) and v for v in (code, endpoint, name_cn, name_en)
-        ):
-            raise ValueError("Invalid route fields in the school catalog")
-        if not re.fullmatch(r"[A-Za-z0-9]+(?:[+_-][A-Za-z0-9]+)*", code):
-            raise ValueError(f"Invalid school catalog route {code!r}")
-        if code in known_keys:
-            raise ValueError(f"Duplicate school catalog route {code!r}")
-        known_keys.add(code)
-        if kind == "quality" and (code, endpoint) == ("quality", "quality"):
+        route = _Route.model_validate(row)
+        kind = _SOURCE_KINDS[route.type]
+        if kind == "quality" and (route.code, route.id) == ("quality", "quality"):
             source_ids = ("",)
-        elif kind != "quality" and re.fullmatch(r"[0-9]+(?:\+[0-9]+)*", endpoint):
-            source_ids = tuple(endpoint.split("+"))
+        elif kind != "quality" and re.fullmatch(r"[0-9]+(?:\+[0-9]+)*", route.id):
+            source_ids = tuple(route.id.split("+"))
         else:
-            raise ValueError(f"Invalid source IDs for school catalog route {code!r}")
-        if len(set(source_ids)) != len(source_ids):
-            raise ValueError(f"Duplicate source IDs for catalog route {code!r}")
-        entries.append(_CatalogEntry(code, kind, source_ids, name_cn, name_en))
+            raise ValueError(
+                f"Invalid source IDs for school catalog route {route.code!r}"
+            )
+        if route.code in entries or len(set(source_ids)) != len(source_ids):
+            raise ValueError(f"Duplicate route or source ID for {route.code!r}")
+        entries[route.code] = _CatalogEntry(
+            route.code, kind, source_ids, route.name.cn, route.name.en
+        )
     if not entries:
         raise ValueError("The school catalog route table is empty")
-    return tuple(entries)
+    return tuple(entries.values())
 
 
 async def _discover_browser_registry(
@@ -195,10 +189,6 @@ _COLUMNS = {
 }
 
 
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-
-
 def _project(kind: str, id_: str, payload: object, url: str) -> tuple[list, list, list]:
     groups, members = [], []
 
@@ -213,16 +203,14 @@ def _project(kind: str, id_: str, payload: object, url: str) -> tuple[list, list
             if kind == "public" and id_ == "66" and parent == ("体育选项",):
                 display = f"体育选项 - {label}"
             is_array = isinstance(value, list)
-            encoded = _json(path)
-            group_kind = "array" if is_array else "object"
-            member_count = len(value) if is_array else 0
+            encoded = catalog_json(path)
             group = (
                 encoded,
-                _json(parent),
+                catalog_json(parent),
                 label,
-                group_kind,
+                "array" if is_array else "object",
                 position,
-                member_count,
+                len(value) if is_array else 0,
                 display,
             )
             groups.append(group)
@@ -233,41 +221,31 @@ def _project(kind: str, id_: str, payload: object, url: str) -> tuple[list, list
                 code = row.get("number") if isinstance(row, dict) else None
                 if not isinstance(code, str) or not code or code != code.strip():
                     raise ValueError(f"Invalid course code in {path} from {url}")
-                members.append((encoded, code, ordinal, _json(row)))
+                members.append((encoded, code, ordinal, catalog_json(row)))
 
     if isinstance(payload, dict):
         walk((), payload)
     elif payload != []:
         raise ValueError(f"Expected a grouped object or empty array from {url}")
-    return [(_json(payload),)], groups, members
+    return [(catalog_json(payload),)], groups, members
 
 
-def _requires_confirmation(conn, sources: dict) -> bool:
-    exists = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE name=?", (CATALOG_GROUP_ENTRIES,)
-    )
-    if not exists.fetchone():
+def _requires_confirmation(store: SQLiteModelStore, sources: dict) -> bool:
+    if not store.has_table(CATALOG_GROUP_ENTRIES):
         return False
-    previous = conn.execute(
-        f"SELECT source_kind, COUNT(DISTINCT route_key), COUNT(DISTINCT source_id), "
-        f"COUNT(*) FROM {CATALOG_GROUP_ENTRIES} GROUP BY source_kind"
+    current = {
+        (kind, id_, row[0]) for (kind, id_), rows in sources.items() for row in rows
+    }
+    previous = store.conn.execute(
+        f"SELECT source_kind, source_id, route_key FROM {CATALOG_GROUP_ENTRIES}"
     )
-    for kind, routes, endpoints, links in previous:
-        selected = [rows for (k, _), rows in sources.items() if k == kind]
-        if (
-            len(selected) < endpoints
-            or sum(map(len, selected)) < links
-            or len({row[0] for rows in selected for row in rows}) < routes
-        ):
-            return True
-    return False
+    return any(link not in current for link in previous)
 
 
 def _persist(store: SQLiteModelStore, registry_url: str, snapshots: list) -> None:
     conn = store.conn
     with conn:
-        counts = {f"{CATALOG_GROUPS}_registry_source": registry_url}
-        inserts = {}
+        inserts = []
         for table, fields in _COLUMNS.items():
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {table} ("
@@ -281,7 +259,7 @@ def _persist(store: SQLiteModelStore, registry_url: str, snapshots: list) -> Non
                 ("fetch_id", "position", "source_kind", "source_id", *extra)
             )
             parameters = ", ".join("?" for _ in range(4 + len(extra)))
-            inserts[table] = f"INSERT INTO {table} ({columns}) VALUES ({parameters})"
+            inserts.append(f"INSERT INTO {table} ({columns}) VALUES ({parameters})")
             conn.execute(f"DELETE FROM {table}")
         conn.execute("DELETE FROM upstream_fetches WHERE source = ?", (CATALOG_GROUPS,))
         for (kind, id_), url, rows in snapshots:
@@ -291,14 +269,12 @@ def _persist(store: SQLiteModelStore, registry_url: str, snapshots: list) -> Non
                 url=url,
                 context={"source_kind": kind, "source_id": id_},
             )
-            for (table, sql), records in zip(inserts.items(), rows, strict=True):
+            for sql, records in zip(inserts, rows, strict=True):
                 data = (
                     (fetch_id, position, kind, id_, *row)
                     for position, row in enumerate(records)
                 )
                 conn.executemany(sql, data)
-                key = f"{table}_count"
-                counts[key] = counts.get(key, 0) + len(records)
         table = CATALOG_GROUP_MEMBERS
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS {table}_course_code_idx "
@@ -308,21 +284,8 @@ def _persist(store: SQLiteModelStore, registry_url: str, snapshots: list) -> Non
             f"CREATE INDEX IF NOT EXISTS {table}_source_path_idx "
             f"ON {table}(source_kind, source_id, group_path_json)"
         )
-        store.put_metadata(counts)
-
-
-async def _fetch_in_batches[T, R](
-    fetch: Callable[[T], Awaitable[R]],
-    items: Iterable[T],
-    concurrency: int,
-    interval: float,
-) -> list[R]:
-    results = []
-    for batch in batched(items, concurrency, strict=False):
-        if results and interval:
-            await asyncio.sleep(interval)
-        results.extend(await asyncio.gather(*(fetch(item) for item in batch)))
-    return results
+        store.update_table_counts(_COLUMNS)
+        store.put_metadata({f"{CATALOG_GROUPS}_registry_source": registry_url})
 
 
 async def refresh_catalog_groups(
@@ -336,7 +299,7 @@ async def refresh_catalog_groups(
             sources[entry.source_kind, id_].append(
                 (entry.route_key, position, ordinal, entry.name_cn, entry.name_en)
             )
-    if _requires_confirmation(store.conn, sources):
+    if _requires_confirmation(store, sources):
         registry_url, confirmed = await _discover_browser_registry(
             session, revalidate=True
         )
@@ -349,7 +312,7 @@ async def refresh_catalog_groups(
         payload = await session.get_json(url, timeout=60_000, transient_retries=1)
         return source, url, (sources[source], *_project(kind, id_, payload, url))
 
-    snapshots = await _fetch_in_batches(
+    snapshots = await fetch_in_batches(
         fetch, sources, _MAX_CONCURRENT_REQUESTS, _BATCH_INTERVAL_SECONDS
     )
     if not any(rows[-1] for _, _, rows in snapshots):

@@ -14,7 +14,7 @@ OBSERVED_SCHEMA_COUNT = 5
 CATALOG_OUTPUTS = {
     "course_catalog": ("course_search", "course_infos"),
     "course_substitutions": ("course_substitute_pool_list",),
-    "section_catalog": ("lesson_infos",),
+    "section_catalog": (),  # Per-semester coverage permits empty terms.
     "catalog_groups": (
         "course_group_entries",
         "course_group_endpoints",
@@ -105,39 +105,35 @@ def _verify_builder_outputs(
     build_dir: Path,
     builders: dict[str, dict[str, str]],
 ) -> None:
-    if builders["curriculum"]["status"] == "ok":
-        for filename in ("life-ustc-static.sqlite", "life-ustc-static-guesses.sqlite"):
-            path = build_dir / filename
-            if not path.is_file():
-                raise BuildVerificationError(f"Missing curriculum output: {path}")
-    snapshot = (build_dir / "life-ustc-static.sqlite").resolve()
     successful = {name for name, result in builders.items() if result["status"] == "ok"}
-    if (
-        successful.intersection({"young", "blackboard", *CATALOG_OUTPUTS})
-        and not snapshot.is_file()
-    ):
+    snapshot = (build_dir / "life-ustc-static.sqlite").resolve()
+    if successful - {"rss"} and not snapshot.is_file():
         raise BuildVerificationError(f"Missing SQLite output: {snapshot}")
-    if successful.intersection(CATALOG_OUTPUTS):
+    if (
+        "curriculum" in successful
+        and not (build_dir / "life-ustc-static-guesses.sqlite").is_file()
+    ):
+        raise BuildVerificationError("Missing curriculum guesses snapshot")
+    catalog = successful.intersection(CATALOG_OUTPUTS)
+    if catalog:
         try:
             with closing(
                 sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)
             ) as db:
-                for name in successful.intersection(CATALOG_OUTPUTS):
-                    if name == "section_catalog":
-                        _verify_section_counts(db)
-                        continue
+                for name in catalog:
                     for suffix in CATALOG_OUTPUTS[name]:
-                        if not db.execute(
-                            f"SELECT 1 FROM catalog_teach_{suffix} LIMIT 1"
-                        ).fetchone():
+                        table = f"catalog_teach_{suffix}"
+                        if not db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
                             raise BuildVerificationError(
-                                f"Empty school catalog table: {suffix}"
+                                f"Empty school catalog table: {table}"
                             )
+                if "section_catalog" in catalog:
+                    _verify_section_counts(db)
         except (sqlite3.Error, ValueError, TypeError, KeyError) as error:
             raise BuildVerificationError(
                 f"Unreadable school catalog: {error}"
             ) from error
-    if builders["rss"]["status"] == "ok":
+    if "rss" in successful:
         feeds = list((build_dir / "rss").glob("*.xml"))
         if not feeds or any(feed.stat().st_size == 0 for feed in feeds):
             raise BuildVerificationError("RSS builder reported success without feeds")

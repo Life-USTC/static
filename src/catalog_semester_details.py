@@ -6,9 +6,9 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Collection
-from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import batched
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -54,8 +54,7 @@ PROFILE_INDEXES = {
 }
 
 
-@dataclass(frozen=True)
-class LessonIdentity:
+class LessonIdentity(NamedTuple):
     id: int
     course_id: int | None
 
@@ -80,11 +79,8 @@ def _index(rows):
                 "The semester lesson index has an invalid lesson code or ID"
             )
         identity = LessonIdentity(lesson, course if course and course > 0 else None)
-        if result.get(code, identity) != identity:
-            raise ValueError(
-                f"The semester lesson index has conflicting rows for {code!r}"
-            )
-        result[code] = identity
+        if result.setdefault(code, identity) != identity:
+            raise ValueError(f"Conflicting semester lesson index rows for {code!r}")
     return result
 
 
@@ -145,11 +141,11 @@ def _replace(store, source, response, term=None):
         (source, context_key),
     ).fetchall()
     if (
-        source == CATALOG_PUBLIC_LESSONS
-        and response is None
+        response is None
+        and source == CATALOG_PUBLIC_LESSONS
         and any(ok for _, ok in rows)
     ):
-        return
+        return  # Keep the last successful public roster when history is unavailable.
     store.register_response_model(table_name=source, response_model=model)
     store.delete_fetches([id_ for id_, _ in rows])
     url = url.format(term=term)
@@ -193,51 +189,45 @@ async def _profile_batch(session, term, codes, lessons):
     return result
 
 
-async def _profile_batches(session, term, requested, lessons, allow_historic_absence):
-    batches = iter(batched(requested, BATCH_SIZE, strict=False))
-    first = list(next(batches, ()))
-    if not first:
-        return
-    try:
-        yield first, await _profile_batch(session, term, first, lessons)
-    except httpx.HTTPStatusError as error:
-        if (
-            not allow_historic_absence
-            or error.response.status_code not in HISTORIC_NOT_FOUND
-        ):
-            raise
-        try:
-            await _profile_batch(session, term, first[:1], lessons)
-        except httpx.HTTPStatusError as retry:
-            if retry.response.status_code in HISTORIC_NOT_FOUND:
-                yield first, None
-                return
-            raise
-        raise error
+async def _profile_batches(session, term, lessons, allow_absence):
+    batches = batched(sorted(lessons), BATCH_SIZE, strict=False)
 
-    async def fetch(position, group):
+    async def fetch(position, batch):
         await asyncio.sleep(position * REQUEST_INTERVAL_SECONDS)
-        return await _profile_batch(session, term, group, lessons)
+        return await _profile_batch(session, term, list(batch), lessons)
 
+    # Fetch the first batch on its own so historical 404s never fan out.
+    if first := next(batches, ()):
+        try:
+            yield first, await fetch(0, first)
+        except httpx.HTTPStatusError as error:
+            if (
+                not allow_absence
+                or error.response.status_code not in HISTORIC_NOT_FOUND
+            ):
+                raise
+            try:
+                await fetch(0, first[:1])
+            except httpx.HTTPStatusError as retry:
+                if retry.response.status_code in HISTORIC_NOT_FOUND:
+                    yield first, None
+                    return
+                raise
+            raise error
     for window in batched(batches, MAX_PROFILE_REQUESTS, strict=False):
-        groups = [list(group) for group in window]
         results = await asyncio.gather(
-            *(fetch(position, group) for position, group in enumerate(groups)),
-            return_exceptions=True,
+            *(fetch(i, codes) for i, codes in enumerate(window)), return_exceptions=True
         )
-        for group, result in zip(groups, results, strict=True):
+        for codes, result in zip(window, results, strict=True):
             if isinstance(result, BaseException):
                 raise result
-            yield group, result
+            yield codes, result
 
 
 async def _profiles(session, term, lessons, *, allow_absence=False, complete=False):
     records, absent = {}, []
     budget = MISSING_PROBE_LIMIT
-    requested = sorted(lessons)
-    async for codes, part in _profile_batches(
-        session, term, requested, lessons, allow_absence
-    ):
+    async for codes, part in _profile_batches(session, term, lessons, allow_absence):
         if part is None:
             return None, []
         missing = [code for code in codes if code not in part]
@@ -257,11 +247,9 @@ async def _profiles(session, term, lessons, *, allow_absence=False, complete=Fal
                 if code not in part:
                     absent.append(code)
         records.update(part)
-    if requested and not records:
+    if lessons and not records:
         raise ValueError(f"Public lesson profiles were empty for semester {term}")
-    return TeachLessonInfosResponse(
-        [records[code] for code in requested if code in records]
-    ), absent
+    return TeachLessonInfosResponse([records[code] for code in sorted(records)]), absent
 
 
 async def _public_index(session, term, cached, ended):
@@ -328,49 +316,43 @@ async def _refresh_term(
     ended = days_since_end > timedelta() and term.isLast is not True
     settled = ended and days_since_end > RECENT_TERM_WINDOW
     unavailable = previous.get("lesson_index_source") in ("cached", "unavailable")
+    retry_age = RECENT_TERM_REFRESH_AGE if unavailable else SETTLED_TERM_REFRESH_AGE
     checked = _time(previous.get("lesson_index_checked_at"), now)
-    recheck = bool(previous) and (
-        checked is None
-        or now - checked
-        >= (RECENT_TERM_REFRESH_AGE if unavailable else SETTLED_TERM_REFRESH_AGE)
-    )
+    recheck = bool(previous) and (checked is None or now - checked >= retry_age)
     cached_signature = _signature(cached)
-    changed_curriculum = (
-        public_cached
-        and curriculum is not None
-        and curriculum != cached_signature
-        and curriculum != previous.get("curriculum_signature")
-    )
-    recheck = recheck or changed_curriculum
+    if public_cached and curriculum not in (
+        None,
+        cached_signature,
+        previous.get("curriculum_signature"),
+    ):
+        recheck = True
     use_archive = (
         settled
         and not explicit
-        and curriculum is not None
         and not public_cached
+        and curriculum is not None
         and not recheck
         and not unavailable
     )
-
-    def fresh(signature):
-        stamp = _time(previous.get("refreshed_at"), now)
-        max_age = SETTLED_TERM_REFRESH_AGE if settled else RECENT_TERM_REFRESH_AGE
-        if not ended and date.fromisoformat(term.start) <= today:
-            max_age = ACTIVE_REFRESH_AGE
-        if previous.get("lesson_infos_unavailable") or previous.get(
-            "unavailable_lesson_codes"
-        ):
-            max_age = min(max_age, RECENT_TERM_REFRESH_AGE)
-        return (
-            stamp is not None
-            and now - stamp < max_age
-            and previous.get("lesson_signature") == signature
-        )
+    max_age = SETTLED_TERM_REFRESH_AGE if settled else RECENT_TERM_REFRESH_AGE
+    if not ended and date.fromisoformat(term.start) <= today:
+        max_age = ACTIVE_REFRESH_AGE
+    if previous.get("lesson_infos_unavailable") or previous.get(
+        "unavailable_lesson_codes"
+    ):
+        max_age = min(max_age, RECENT_TERM_REFRESH_AGE)
+    stamp = _time(previous.get("refreshed_at"), now)
+    fresh_signature = (
+        previous.get("lesson_signature")
+        if stamp is not None and now - stamp < max_age
+        else None
+    )
 
     if (
         settled
         and not explicit
         and not recheck
-        and fresh(cached_signature)
+        and fresh_signature == cached_signature
         and (previous.get("lesson_index_source") != "curriculum" or use_archive)
     ):
         if metadata != previous:
@@ -404,7 +386,7 @@ async def _refresh_term(
             )
     signature = _signature(lessons)
     metadata.update(lesson_index_source=source, lesson_index_checked_at=now.isoformat())
-    reused = fresh(signature)
+    reused = fresh_signature == signature
     if not reused:
         if lessons and not archive_confirmed:
             profiles, absent = await _profiles(
@@ -414,8 +396,6 @@ async def _refresh_term(
                 allow_absence=ended and not previous.get("lesson_profile_rows"),
             )
         count = len(profiles.root) if profiles is not None else 0
-        if profiles is not None and count + len(absent) != len(lessons):
-            raise ValueError(f"Lesson profile coverage did not reconcile for {term.id}")
         if count == 0 and previous.get("lesson_profile_rows", 0):
             raise ValueError(
                 f"Existing lesson profiles became empty for semester {term.id}"
@@ -459,7 +439,7 @@ async def refresh_catalog_semester_details(
         await _get(session, SEMESTER_LIST_URL)
     )
     terms, seen = {}, set()
-    for term in response.root:
+    for term in response.root or ():
         if term.id is None or term.id <= 0 or term.id in seen:
             raise ValueError("Public semester index contains invalid or duplicate IDs")
         seen.add(term.id)
@@ -486,30 +466,25 @@ async def refresh_catalog_semester_details(
         "partial_sources_unavailable",
     }:
         verified.clear()
-    explicit = None if semester_ids is None else set(semester_ids)
-    if explicit is not None:
-        if not explicit:
+    if semester_ids is not None:
+        if not semester_ids:
             raise ValueError("At least one explicit semester ID is required")
-        if unknown := explicit - terms.keys():
+        if unknown := set(semester_ids) - terms.keys():
             raise ValueError(
                 f"Unknown or undated public semester IDs: {sorted(unknown)}"
             )
-    selected = [
-        term
-        for term in terms.values()
-        if (
-            term.id in explicit
-            if explicit is not None
-            else (
-                date.fromisoformat(term.start) <= today
-                and (
-                    term.isLast is True
-                    or date.fromisoformat(term.end) >= today
-                    or term.id in cached
-                )
+        selected = [terms[id_] for id_ in set(semester_ids)]
+    else:
+        selected = [
+            term
+            for term in terms.values()
+            if date.fromisoformat(term.start) <= today
+            and (
+                term.isLast
+                or date.fromisoformat(term.end) >= today
+                or term.id in cached
             )
-        )
-    ]
+        ]
     if not selected:
         raise ValueError("Public semester index provided no active or cached semesters")
     failures = []

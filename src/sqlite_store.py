@@ -168,27 +168,22 @@ class SQLiteModelStore:
             fetch_ids,
         )
 
+    def has_table(self, table: str) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            is not None
+        )
+
     def _tables_with_column(self, column_name: str) -> list[str]:
-        table_names = [
-            row[0]
-            for row in self.conn.execute(
-                """
-                SELECT name FROM sqlite_master
-                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-                """
-            )
-        ]
-        result = []
-        for table_name in table_names:
-            columns = {
-                row[1]
-                for row in self.conn.execute(
-                    f"PRAGMA table_info({_quote_identifier(table_name)})"
-                )
-            }
-            if column_name in columns:
-                result.append(table_name)
-        return result
+        rows = self.conn.execute(
+            "SELECT m.name FROM sqlite_master m JOIN pragma_table_info(m.name) c "
+            "WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND c.name = ?",
+            (column_name,),
+        )
+        return [name for (name,) in rows]
 
     def record_fetch(
         self,
@@ -238,10 +233,23 @@ class SQLiteModelStore:
             [(key, str(value)) for key, value in items.items()],
         )
 
-    def delete_source_fetches(self, source: str) -> None:
-        rows = self.conn.execute(
-            "SELECT id FROM upstream_fetches WHERE source = ?", (source,)
+    def update_table_counts(self, tables) -> None:
+        self.put_metadata(
+            {
+                f"{table}_count": self.conn.execute(
+                    f"SELECT COUNT(*) FROM {_quote_identifier(table)}"
+                ).fetchone()[0]
+                for table in tables
+            }
         )
+
+    def delete_source_fetches(self, source: str, *, context: str | None = None) -> None:
+        sql = "SELECT id FROM upstream_fetches WHERE source = ?"
+        parameters = (source,)
+        if context is not None:
+            sql += " AND context = ?"
+            parameters += (context,)
+        rows = self.conn.execute(sql, parameters)
         self.delete_fetches([fetch_id for (fetch_id,) in rows])
 
     def store_fetched_response(

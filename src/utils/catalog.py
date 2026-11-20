@@ -1,3 +1,8 @@
+import asyncio
+import json
+from collections.abc import Awaitable, Callable, Iterable
+from itertools import batched
+
 from ..models import Course, Department, Exam, Semester, TeacherAssignment
 from ..models.api.catalog_api_teach_exam_list import TeachExamListResponse
 from ..models.api.catalog_api_teach_lesson_list_for_teach import (
@@ -229,3 +234,27 @@ def parse_exams(payload: list[dict]) -> dict[int, list[Exam]]:
 async def get_exams(session: RequestSession, semester_id: str) -> dict[int, list[Exam]]:
     payload = await fetch_exams_json(session=session, semester_id=semester_id)
     return parse_exams(payload)
+
+
+def catalog_json(value: object, *, sort_keys=False) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+        sort_keys=sort_keys,
+    )
+
+
+async def fetch_in_batches[T, R](
+    fetch: Callable[[T], Awaitable[R]],
+    items: Iterable[T],
+    concurrency: int,
+    interval: float,
+) -> list[R]:
+    results = []
+    for batch in batched(items, concurrency, strict=False):
+        if results and interval:
+            await asyncio.sleep(interval)
+        results.extend(await asyncio.gather(*(fetch(item) for item in batch)))
+    return results
