@@ -3,13 +3,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import cast
 
-EXPECTED_SCHEMA_COUNT = 7
+EXPECTED_SCHEMA_COUNT = 11
 OBSERVED_SCHEMA_COUNT = 5
-BUILDER_NAMES = ("curriculum", "young", "rss", "blackboard")
+BUILDER_NAMES = (
+    "curriculum",
+    "course_catalog",
+    "course_substitutions",
+    "section_catalog",
+    "catalog_groups",
+    "study_plans",
+    "young",
+    "rss",
+    "blackboard",
+)
 
 
 class BuildVerificationError(RuntimeError):
@@ -91,6 +103,45 @@ def _verify_builder_outputs(
             path = build_dir / filename
             if not path.is_file():
                 raise BuildVerificationError(f"Missing curriculum output: {path}")
+    public_course_tables = {
+        "course_catalog": ("catalog_teach_course_search", "catalog_teach_course_infos"),
+        "course_substitutions": ("catalog_teach_course_substitute_pool_list",),
+        "catalog_groups": (
+            "catalog_teach_course_group_entries",
+            "catalog_teach_course_group_endpoints",
+            "catalog_teach_course_groups",
+            "catalog_teach_course_group_members",
+        ),
+        "study_plans": (
+            "catalog_teach_program_tree",
+            "catalog_teach_program_info",
+            "catalog_teach_course_module_info",
+            "catalog_teach_program_courses",
+        ),
+    }
+    for builder, tables in public_course_tables.items():
+        if builders[builder]["status"] != "ok":
+            continue
+        snapshot = (build_dir / "life-ustc-static.sqlite").resolve()
+        try:
+            connection = sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)
+            try:
+                for table in tables:
+                    if (
+                        connection.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+                        is None
+                    ):
+                        raise BuildVerificationError(
+                            f"Course catalog table is empty: {table}"
+                        )
+            finally:
+                connection.close()
+        except sqlite3.Error as error:
+            raise BuildVerificationError(
+                f"Missing or unreadable course catalog: {error}"
+            ) from error
+    if builders["section_catalog"]["status"] == "ok":
+        _verify_section_catalog(build_dir / "life-ustc-static.sqlite")
     if builders["young"]["status"] == "ok":
         path = build_dir / "life-ustc-static.sqlite"
         if not path.is_file():
@@ -103,6 +154,49 @@ def _verify_builder_outputs(
         path = build_dir / "life-ustc-static.sqlite"
         if not path.is_file():
             raise BuildVerificationError(f"Missing Blackboard output: {path}")
+
+
+def _verify_section_catalog(snapshot: Path) -> None:
+    try:
+        with closing(
+            sqlite3.connect(f"{snapshot.resolve().as_uri()}?mode=ro", uri=True)
+        ) as db:
+            _verify_section_counts(db)
+    except (sqlite3.Error, ValueError, TypeError, KeyError) as error:
+        raise BuildVerificationError(f"Invalid section catalog: {error}") from error
+
+
+def _verify_section_counts(db: sqlite3.Connection) -> None:
+    terms = db.execute(
+        "SELECT key, value FROM metadata "
+        "WHERE key GLOB 'catalog_semester_details_[0-9]*'"
+    ).fetchall()
+    if not terms:
+        raise BuildVerificationError(
+            "No semester coverage recorded for section profiles"
+        )
+    counts = (
+        dict(
+            db.execute(
+                "SELECT semester_id, count(*) FROM catalog_teach_lesson_infos "
+                "GROUP BY semester_id"
+            )
+        )
+        if db.execute(
+            "SELECT 1 FROM pragma_table_info('catalog_teach_lesson_infos') "
+            "WHERE name='semester_id'"
+        ).fetchone()
+        else {}
+    )
+    for key, value in terms:
+        semester_id = key.rsplit("_", 1)[1]
+        expected = json.loads(value)["lesson_profile_rows"]
+        if counts.pop(semester_id, 0) != expected:
+            raise BuildVerificationError(
+                f"Section profile count differs for semester {semester_id}"
+            )
+    if counts:
+        raise BuildVerificationError("Section profiles lack semester coverage metadata")
 
 
 def _verify_room_maps(build_dir: Path) -> None:

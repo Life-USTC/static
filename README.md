@@ -27,6 +27,11 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 构建器（`main.py`）按需运行：
 
 - **curriculum** — `catalog.ustc.edu.cn` 与教务课表相关上游 → SQLite
+- **course_substitutions** — 学校公布的成组课程替代关系 → 同一 SQLite 快照
+- **course_catalog** — 学校公开课程目录及课程详情 → 同一 SQLite 快照，运行时无需登录
+- **section_catalog** — 公开学期信息、开课列表及教学班详情 → 同一 SQLite 快照
+- **catalog_groups** — 官网公共基础课、院系与综合素质等目录分组 → 同一 SQLite 快照
+- **study_plans** — 学校执行计划、公共课程模块及课程归属 → 同一 SQLite 快照
 - **young** — `young.ustc.edu.cn` 智慧团学活动 → 写入同一快照库
 - **rss** — 校主页新闻、教务处、应用通知等源 → XML；另含体教中心等爬取源
 - **blackboard** — `www.bb.ustc.edu.cn` 匿名访客会话可见的课程作业 / 实验 / 参考资料
@@ -52,8 +57,29 @@ Young 每次构建都会完整刷新进行中和已结束活动列表，并在�
 可选新名称写入失败会回滚其 savepoint，不能恢复已清理的无关名称；真正的存储、回滚或最终提交失败
 仍会阻止不安全快照发布。此表只覆盖采集记录引用范围，不声称覆盖 server 保留的所有历史活动。
 
-失败的 builder 会回滚该 builder 的旧产物；`build-status.json` 记录各 builder 状态。
+构建器失败时保留原有产物。教学班按学期提交，一个学期失败仍可使用其他学期已验证的更新。`build-status.json` 记录各构建器状态。
 旧的 curriculum JSON 端点与 upstream response cache **已停发**。
+
+## 学校课程目录
+
+运行 `uv run python main.py --course-catalog` 单独更新课程资料，默认完整构建也会执行。通过公开搜索的空关键词枚举课程代码，保留历史课程和学校标记为无效的记录。通过 `POST /api/teach/course/infos` 按代码批量读取详情，每批最多 100 个代码，按课程代码匹配返回结果。新课程及摘要发生变化的课程立即刷新；其余详情在距上次获取满 14 天后再次读取，覆盖只改简介或教材的情况。
+
+搜索摘要保存在 `catalog_teach_course_search`，课程详情保存在 `catalog_teach_course_infos`。资料包括开课单位、课程学分和学时、开课季节、评分制、考核方式、学科类别、授课语言、预修要求、中英文简介、教材和参考书，以及学校实际提供的结构化书目和教学大纲。课程代码保留原始字符串与前导零。教材、参考书和考核方式采用学校目录的参考值，具体开课安排可独立变化。
+
+同一命令还会独立刷新官网「课程替代」页，一次读取 `GET /api/teach/course-substitute-pool/list`。表 `catalog_teach_course_substitute_pool_list` 保留每条关系的原课程组和替代课程组。方向、组员和学分均按学校记录保存，多门课合在一起才能构成的替代关系保留为一组。
+
+### 教学班详情
+
+`--course-catalog` 同时采集公开教学班详情，无需校方会话。先读取公开学期与当前公布学期的实际开课列表，再以学期 ID 和班号调用 `POST /api/teach/lesson/infos`，按教学班 ID 和课程 ID 核对返回结果。空库默认采当前公布学期，已有可信开课列表的历史学期也会补采。对于已结束超过 120 天的学期，已有课程采集成功记录时先复用同一官网接口的班号清单，直接批量请求详情。班号、课程或教学班 ID 不符，以及详情缺项时，重新核对官网开课列表。每批最多 100 个班号，每学期最多同时请求 3 批。只采指定学期可运行 `uv run python main.py --section-semester 421`，参数可重复。
+
+`catalog_teach_public_semester_list` 与 `catalog_teach_public_lesson_list_for_teach` 保留公开学期和开课列表来源，`catalog_teach_lesson_infos` 保存教学班采用的考核方式、预修要求、学分和学时、双语简介、书目和大纲。用 `semester_id` 与班号识别详情。每学期独立提交，缺项与历史不可用状态记在 `catalog_semester_details_{学期ID}` 元数据中，未经验证的部分返回保留原有快照。原有教务课表、排课猜测和考试数据沿用各自来源。
+
+### 官网目录分组与执行计划
+
+`--course-catalog` 和完整构建也会刷新这两组资料。只更新归属和计划时，运行 `uv run python main.py --catalog-relationships`。
+
+- **目录分组**读取官网使用的公共基础课分类、院系和综合素质入口，分别保存入口映射、端点原始回包、分组路径和课程成员。查询 `catalog_teach_course_group_members` 时，可按课程代码反查维度。同一门课在多个来源或分组出现时，各条归属均保留。入口与端点的对应关系来自官网前端版本，版本记录在快照元数据。
+- **执行计划**从公开方案树发现院系、专业、年级和培养类型下的计划 ID，逐一读取计划详情，并沿实际引用读取、去重共享公共模块。`catalog_teach_program_tree`、`catalog_teach_program_info`、`catalog_teach_course_module_info` 保存原始响应，`catalog_teach_program_courses` 将课程与具体方案、模块、必选属性和建议学期关联。计划和模块详情可复用 14 天内的成功记录。 [官网接口调查](docs/school-catalog-interfaces.md)
 
 ## Blackboard 公开课程资料
 
@@ -82,6 +108,17 @@ SHA-256 与大小，不重复下载。
 的资源一律记为 `access_state = "auth_required"` 并跳过，不重试、不提交凭据、不绕过任何
 权限控制。礼貌性约束同样写在配置里：单连接、请求间隔 1.5 秒、遵守 `Retry-After`、
 User-Agent 标明项目地址，并有每课程页数 / 资源数 / 单文件大小上限。
+
+## Pages 产物与增量缓存
+
+本地 `build/life-ustc-static.sqlite` 包含完整数据。Pages 打包另建发布目录，发布两份快照：
+
+| 文件 | 内容 |
+| --- | --- |
+| `life-ustc-static.sqlite.gz` | 完整 SQLite 的 gzip，解压后与本次构建原文件逐字节相同 |
+| `life-ustc-static.sqlite` | 原下载地址的 SQLite，保留教务课表、已有考试、Young 和 Blackboard 等既有数据。新增公开课程和教学班详情、替代关系、目录归属和执行计划通过完整压缩快照获取 |
+
+`tools.pages_snapshot prepare` 保留本地构建库、排除发布诊断文件，并核对发布目录总大小。下一次构建通过 `restore` 优先恢复完整压缩库。早期只有原始 SQLite 的 artifact 仍可恢复。压缩库损坏时会尝试更早的 artifact，避免将当次兼容库当作完整缓存。
 
 ## 给贡献者
 

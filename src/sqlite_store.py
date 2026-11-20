@@ -9,6 +9,8 @@ from typing import Union, get_args, get_origin
 
 from pydantic import BaseModel, RootModel
 
+from .models.api.base import UpstreamSnapshotModel
+
 SCHEMA_VERSION = 6
 SNAPSHOT_FILENAME = "life-ustc-static.sqlite"
 GUESSES_FILENAME = "life-ustc-static-guesses.sqlite"
@@ -30,6 +32,10 @@ def _column_type(annotation: object) -> str:
         return "INTEGER"
     if annotation is float:
         return "REAL"
+    if get_origin(annotation) in {UnionType, Union} and set(get_args(annotation)) - {
+        NoneType
+    } == {int, float}:
+        return "NUMERIC"
     if annotation is str:
         return "TEXT"
     return "TEXT"
@@ -366,6 +372,8 @@ class SQLiteModelStore:
         model_stack: tuple[type[BaseModel], ...],
     ) -> None:
         scalar_columns = dict(base_columns)
+        if issubclass(model_type, UpstreamSnapshotModel):
+            scalar_columns["payload_json"] = "TEXT NOT NULL"
         nested_items: list[tuple[str, object, bool]] = []
         include_nested = model_type not in model_stack
 
@@ -443,6 +451,11 @@ class SQLiteModelStore:
             "fetch_id": "INTEGER NOT NULL",
         }
         scalar_values: dict[str, object] = {"fetch_id": fetch_id}
+        if isinstance(model, UpstreamSnapshotModel):
+            scalar_columns["payload_json"] = "TEXT NOT NULL"
+            scalar_values["payload_json"] = model.model_dump_json(
+                by_alias=True, exclude_unset=True
+            )
 
         if parent_store_id is not None:
             scalar_columns["parent_store_id"] = "INTEGER NOT NULL"

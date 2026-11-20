@@ -960,7 +960,7 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
             store.close()
             schemas = build / "schemas" / "upstream"
             schemas.mkdir(parents=True)
-            for index in range(7):
+            for index in range(11):
                 (schemas / f"schema-{index}.expected.schema.json").write_text("{}")
             (build / "rss").mkdir()
             (build / "rss" / "feed.xml").write_text("<rss />")
@@ -987,6 +987,11 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                     {
                         "builders": {
                             "curriculum": {"status": "failed"},
+                            "course_catalog": {"status": "failed"},
+                            "course_substitutions": {"status": "failed"},
+                            "section_catalog": {"status": "failed"},
+                            "catalog_groups": {"status": "failed"},
+                            "study_plans": {"status": "failed"},
                             "young": {"status": "ok"},
                             "rss": {"status": "ok"},
                             "blackboard": {"status": "failed"},
