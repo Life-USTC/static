@@ -5,12 +5,21 @@ import logging
 import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
+from contextlib import closing
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
+import httpx
+
 from src import make_blackboard, make_curriculum, make_rss, make_young_events
-from src.sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME
+from src.catalog_groups import refresh_catalog_groups
+from src.catalog_semester_details import refresh_catalog_semester_details
+from src.course_catalog import refresh_course_catalog
+from src.course_substitutions import refresh_course_substitutions
+from src.sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
+from src.study_plans import refresh_study_plans
+from src.utils.auth import RequestSession
 from tools.room_maps import build_room_maps
 from tools.upstream_schemas import export_upstream_schemas
 
@@ -48,7 +57,7 @@ async def _run_builders(
                 await builder()
             except Exception as error:
                 _restore_outputs(output_paths, backup_dir)
-                logging.exception("%s builder failed; restored previous output", name)
+                logging.exception("%s builder failed", name)
                 print(
                     f"::error title={name} builder failed::"
                     f"{type(error).__name__}: {error}"
@@ -73,32 +82,34 @@ async def _run_builders(
     return results
 
 
+async def run_public_course_builder(
+    build_dir: Path,
+    refresh: Callable[[RequestSession, SQLiteModelStore], Awaitable[None]],
+) -> None:
+    database = SQLiteModelStore(build_dir / SNAPSHOT_FILENAME, reset=False)
+    with closing(database), database.conn:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            await refresh(RequestSession(client=client, page=None), database)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Life-USTC static builders")
+    for flag, help_text in {
+        "rss": "Generate RSS",
+        "curriculum": "Generate curriculum data",
+        "young": "Generate Young event data",
+        "blackboard": "Crawl public Blackboard course material",
+        "verify-upstream-contract": "Refresh curriculum and verify its contracts",
+        "course-catalog": "Refresh all public course data",
+        "catalog-relationships": "Refresh course groups and study plans",
+    }.items():
+        parser.add_argument("--" + flag, action="store_true", help=help_text)
     parser.add_argument(
-        "--rss",
-        action="store_true",
-        help="Generate RSS",
-    )
-    parser.add_argument(
-        "--curriculum",
-        action="store_true",
-        help="Generate curriculum data",
-    )
-    parser.add_argument(
-        "--young",
-        action="store_true",
-        help="Generate Young event data",
-    )
-    parser.add_argument(
-        "--blackboard",
-        action="store_true",
-        help="Crawl public Blackboard course material through a guest session",
-    )
-    parser.add_argument(
-        "--verify-upstream-contract",
-        action="store_true",
-        help="Fully refresh curriculum sources and verify upstream contracts",
+        "--section-semester",
+        type=int,
+        action="append",
+        metavar="ID",
+        help="Refresh class profiles for this semester (repeatable)",
     )
     args = parser.parse_args()
 
@@ -110,24 +121,19 @@ def main() -> None:
     build_dir = base_dir / "build"
     build_dir.mkdir(exist_ok=True)
 
-    static_dir = base_dir / "static"
-    shutil.copytree(static_dir, build_dir, dirs_exist_ok=True)
-    build_room_maps(static_dir, build_dir)
-
-    run_all = (
-        not args.rss
-        and not args.curriculum
-        and not args.young
-        and not args.blackboard
-        and not args.verify_upstream_contract
-    )
-    run_rss = args.rss or run_all
-    run_curriculum = args.curriculum or args.verify_upstream_contract or run_all
-    run_young = args.young or run_all
-    run_blackboard = args.blackboard or run_all
+    run_all = not any(vars(args).values())
+    catalog = run_all or args.course_catalog
+    sections = catalog or bool(args.section_semester)
+    relationships = catalog or args.catalog_relationships
+    run_curriculum = run_all or args.curriculum or args.verify_upstream_contract
+    catalog_only = not (run_curriculum or args.rss or args.young or args.blackboard)
+    if not catalog_only:
+        static_dir = base_dir / "static"
+        shutil.copytree(static_dir, build_dir, dirs_exist_ok=True)
+        build_room_maps(static_dir, build_dir)
 
     builders: list[tuple[str, Callable[[], Awaitable[None]], tuple[Path, ...]]] = []
-    if run_rss:
+    if run_all or args.rss:
         builders.append(("rss", make_rss, (build_dir / "rss",)))
     if run_curriculum:
         builders.append(
@@ -145,27 +151,47 @@ def main() -> None:
                 ),
             )
         )
-    if run_young:
-        builders.append(("young", make_young_events, (build_dir / SNAPSHOT_FILENAME,)))
-    if run_blackboard:
-        builders.append(
-            (
-                "blackboard",
-                make_blackboard,
-                (build_dir / SNAPSHOT_FILENAME,),
+    for enabled, name, refresh in (
+        (catalog, "course_catalog", refresh_course_catalog),
+        (catalog, "course_substitutions", refresh_course_substitutions),
+        (
+            sections,
+            "section_catalog",
+            partial(
+                refresh_catalog_semester_details, semester_ids=args.section_semester
+            ),
+        ),
+        (
+            relationships,
+            "catalog_groups",
+            refresh_catalog_groups,
+        ),
+        (relationships, "study_plans", refresh_study_plans),
+    ):
+        if enabled:
+            # Each public collector commits its own validated source or semester.
+            builders.append(
+                (name, partial(run_public_course_builder, build_dir, refresh), ())
             )
-        )
+    for name, refresh in (
+        ("young", make_young_events),
+        ("blackboard", make_blackboard),
+    ):
+        if run_all or getattr(args, name):
+            builders.append((name, refresh, (build_dir / SNAPSHOT_FILENAME,)))
 
     results = asyncio.run(
         _run_builders(builders, status_path=build_dir / "build-status.json")
     )
+    if catalog_only and any(
+        result["status"] == "failed" for result in results.values()
+    ):
+        raise RuntimeError("Public course refresh incomplete; see build-status.json")
     if results and all(result["status"] == "failed" for result in results.values()):
         raise RuntimeError("All selected static builders failed")
 
-    curriculum_succeeded = (
-        run_curriculum and results.get("curriculum", {}).get("status") == "ok"
-    )
-    if run_young and not curriculum_succeeded and not run_curriculum:
+    curriculum_succeeded = results.get("curriculum", {}).get("status") == "ok"
+    if not curriculum_succeeded and (args.young or sections or relationships):
         schema_paths = export_upstream_schemas(build_dir / "schemas" / "upstream")
         logging.info("Exported %s upstream JSON schemas", len(schema_paths))
 

@@ -3,13 +3,32 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import cast
 
-EXPECTED_SCHEMA_COUNT = 7
+EXPECTED_SCHEMA_COUNT = 11
 OBSERVED_SCHEMA_COUNT = 5
-BUILDER_NAMES = ("curriculum", "young", "rss", "blackboard")
+CATALOG_OUTPUTS = {
+    "course_catalog": ("course_search", "course_infos"),
+    "course_substitutions": ("course_substitute_pool_list",),
+    "section_catalog": (),  # Per-semester coverage permits empty terms.
+    "catalog_groups": (
+        "course_group_entries",
+        "course_group_endpoints",
+        "course_groups",
+        "course_group_members",
+    ),
+    "study_plans": (
+        "program_tree",
+        "program_info",
+        "course_module_info",
+        "program_courses",
+    ),
+}
+BUILDER_NAMES = ("curriculum", *CATALOG_OUTPUTS, "young", "rss", "blackboard")
 
 
 class BuildVerificationError(RuntimeError):
@@ -86,23 +105,66 @@ def _verify_builder_outputs(
     build_dir: Path,
     builders: dict[str, dict[str, str]],
 ) -> None:
-    if builders["curriculum"]["status"] == "ok":
-        for filename in ("life-ustc-static.sqlite", "life-ustc-static-guesses.sqlite"):
-            path = build_dir / filename
-            if not path.is_file():
-                raise BuildVerificationError(f"Missing curriculum output: {path}")
-    if builders["young"]["status"] == "ok":
-        path = build_dir / "life-ustc-static.sqlite"
-        if not path.is_file():
-            raise BuildVerificationError(f"Missing Young output: {path}")
-    if builders["rss"]["status"] == "ok":
+    successful = {name for name, result in builders.items() if result["status"] == "ok"}
+    snapshot = (build_dir / "life-ustc-static.sqlite").resolve()
+    if successful - {"rss"} and not snapshot.is_file():
+        raise BuildVerificationError(f"Missing SQLite output: {snapshot}")
+    if (
+        "curriculum" in successful
+        and not (build_dir / "life-ustc-static-guesses.sqlite").is_file()
+    ):
+        raise BuildVerificationError("Missing curriculum guesses snapshot")
+    catalog = successful.intersection(CATALOG_OUTPUTS)
+    if catalog:
+        try:
+            with closing(
+                sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)
+            ) as db:
+                for name in catalog:
+                    for suffix in CATALOG_OUTPUTS[name]:
+                        table = f"catalog_teach_{suffix}"
+                        if not db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                            raise BuildVerificationError(
+                                f"Empty school catalog table: {table}"
+                            )
+                if "section_catalog" in catalog:
+                    _verify_section_counts(db)
+        except (sqlite3.Error, ValueError, TypeError, KeyError) as error:
+            raise BuildVerificationError(
+                f"Unreadable school catalog: {error}"
+            ) from error
+    if "rss" in successful:
         feeds = list((build_dir / "rss").glob("*.xml"))
         if not feeds or any(feed.stat().st_size == 0 for feed in feeds):
             raise BuildVerificationError("RSS builder reported success without feeds")
-    if builders["blackboard"]["status"] == "ok":
-        path = build_dir / "life-ustc-static.sqlite"
-        if not path.is_file():
-            raise BuildVerificationError(f"Missing Blackboard output: {path}")
+
+
+def _verify_section_counts(db: sqlite3.Connection) -> None:
+    terms = db.execute(
+        "SELECT key, value FROM metadata "
+        "WHERE key GLOB 'catalog_semester_details_[0-9]*'"
+    )
+    declared = {
+        key.rsplit("_", 1)[1]: json.loads(value)["lesson_profile_rows"]
+        for key, value in terms
+    }
+    if not declared:
+        raise BuildVerificationError("Missing section coverage")
+    actual = {}
+    if db.execute(
+        "SELECT 1 FROM pragma_table_info('catalog_teach_lesson_infos') "
+        "WHERE name='semester_id'"
+    ).fetchone():
+        actual = dict(
+            db.execute(
+                "SELECT semester_id, count(*) FROM catalog_teach_lesson_infos "
+                "GROUP BY semester_id"
+            )
+        )
+    if actual != {term: count for term, count in declared.items() if count}:
+        raise BuildVerificationError(
+            "Section counts differ from declared semester coverage"
+        )
 
 
 def _verify_room_maps(build_dir: Path) -> None:

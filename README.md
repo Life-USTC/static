@@ -9,7 +9,8 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 
 | 产物 | 内容 |
 |------|------|
-| `life-ustc-static.sqlite` | 规范化后的上游响应（课程 / 课表 / Blackboard 公开课程资料索引等） |
+| `life-ustc-static.sqlite.gz` | 完整本地 SQLite 压缩包，包含新增目录资料；增量构建优先恢复此文件 |
+| `life-ustc-static.sqlite` | 兼容下载，包含规范化后的上游响应（课程 / 课表 / Blackboard 公开课程资料索引等） |
 | `life-ustc-static-guesses.sqlite` | 无法直接从上游键出的推断关系 |
 | `schemas/upstream/*.expected.schema.json` | 从 Pydantic 生成的上游契约 |
 | `rss/` | 清洗后的校内新闻等 XML 订阅 |
@@ -27,6 +28,7 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 构建器（`main.py`）按需运行：
 
 - **curriculum** — `catalog.ustc.edu.cn` 与教务课表相关上游 → SQLite
+- **公开课程目录** — 课程与教学班详情、课程替代、目录分组、执行计划及公共模块 → SQLite
 - **young** — `young.ustc.edu.cn` 智慧团学活动 → 写入同一快照库
 - **rss** — 校主页新闻、教务处、应用通知等源 → XML；另含体教中心等爬取源
 - **blackboard** — `www.bb.ustc.edu.cn` 匿名访客会话可见的课程作业 / 实验 / 参考资料
@@ -52,8 +54,16 @@ Young 每次构建都会完整刷新进行中和已结束活动列表，并在�
 可选新名称写入失败会回滚其 savepoint，不能恢复已清理的无关名称；真正的存储、回滚或最终提交失败
 仍会阻止不安全快照发布。此表只覆盖采集记录引用范围，不声称覆盖 server 保留的所有历史活动。
 
-失败的 builder 会回滚该 builder 的旧产物；`build-status.json` 记录各 builder 状态。
+构建器失败时保留原有产物。教学班按学期提交，一个学期失败仍可使用其他学期已验证的更新。`build-status.json` 记录各构建器状态。
 旧的 curriculum JSON 端点与 upstream response cache **已停发**。
+
+## 学校课程目录
+
+`uv run python main.py --course-catalog` 匿名更新全部目录资料；也可用 `--section-semester ID` 指定一个或多个学期，用 `--catalog-relationships` 只更新分组和执行计划。完整构建自动采集这些数据。[官网接口与字段](docs/school-catalog-interfaces.md)
+
+课程与教学班详情分别保存在 `catalog_teach_course_infos` 和 `catalog_teach_lesson_infos`。课程摘要变化时立即刷新，其他课程详情每 14 天复核。教学班按学期、班号及课程 ID 校验；历史学期复用可信开课索引，名单出现分歧时回查官网。完整历史资料最多缓存 30 天，缺项每 7 天重试。
+
+`catalog_teach_course_group_members` 支持按课程代码反查目录归属。`catalog_teach_program_courses` 保留每次出现的方案、模块路径、必修属性和建议学期。`catalog_teach_course_substitute_pool_list` 保留整组替代规则及方向。
 
 ## Blackboard 公开课程资料
 

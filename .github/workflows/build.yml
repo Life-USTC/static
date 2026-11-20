@@ -70,9 +70,12 @@ jobs:
               --name github-pages \
               --dir /tmp/previous-pages &&
               test -f /tmp/previous-pages/artifact.tar; then
-              tar -xf /tmp/previous-pages/artifact.tar -C build
-              echo "Restored previous build artifact $run_id"
-              exit 0
+              mkdir -p /tmp/previous-pages/unpacked
+              if tar -xf /tmp/previous-pages/artifact.tar -C /tmp/previous-pages/unpacked && \
+                uv run --no-dev python -m tools.pages_snapshot restore /tmp/previous-pages/unpacked build; then
+                echo "Restored previous build artifact $run_id"
+                exit 0
+              fi
             fi
             echo "::warning title=Previous build cache unavailable::Artifact from run $run_id could not be restored"
           done
@@ -90,15 +93,13 @@ jobs:
           uv run --no-dev python tools/verify_build.py
       - name: Prepare Pages artifact
         run: |
-          find build -name '*.observed.schema.json' -delete
-          find build -name 'contract-report.json' -delete
-          test -z "$(find build -name '*.observed.schema.json' -o -name 'contract-report.json')"
-          touch build/.nojekyll
+          uv run --no-dev python -m tools.pages_snapshot prepare build "$RUNNER_TEMP/static-pages"
       - name: Upload static files as artifact
         id: deployment
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: build/
+          path: ${{ runner.temp }}/static-pages/
+          include-hidden-files: true
           retention-days: 7
 
   deploy:
