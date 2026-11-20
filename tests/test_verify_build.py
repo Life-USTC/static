@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.fixtures.catalog_cache import seed_catalog_cache
 from tools.verify_build import (
     BUILDER_NAMES,
-    CATALOG_OUTPUTS,
     BuildVerificationError,
     _verify_builder_outputs,
     _verify_section_counts,
@@ -99,19 +99,7 @@ class BuildVerificationTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            db = sqlite3.connect(build_dir / "life-ustc-static.sqlite")
-            with db:
-                for suffixes in CATALOG_OUTPUTS.values():
-                    for suffix in suffixes:
-                        table = f"catalog_teach_{suffix}"
-                        db.execute(f"CREATE TABLE {table} (id INTEGER)")
-                        db.execute(f"INSERT INTO {table} VALUES (1)")
-                db.execute("CREATE TABLE metadata (key TEXT, value TEXT)")
-                db.execute(
-                    "INSERT INTO metadata VALUES (?, ?)",
-                    ("catalog_semester_details_1", '{"lesson_profile_rows":0}'),
-                )
-            db.close()
+            seed_catalog_cache(build_dir / "life-ustc-static.sqlite")
             verify_build(
                 build_dir=build_dir,
                 status_path=status_path,

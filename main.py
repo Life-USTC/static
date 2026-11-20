@@ -82,7 +82,7 @@ async def _run_builders(
     return results
 
 
-async def main() -> None:
+async def _main() -> None:
     parser = argparse.ArgumentParser(description="Life-USTC static builders")
     for flag, help_text in {
         "rss": "Generate RSS",
@@ -203,5 +203,9 @@ async def main() -> None:
         logging.info("Exported %s upstream JSON schemas", len(schema_paths))
 
 
+def main() -> None:
+    asyncio.run(_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
