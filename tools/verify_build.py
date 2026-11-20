@@ -114,25 +114,20 @@ def _verify_builder_outputs(
         and not (build_dir / "life-ustc-static-guesses.sqlite").is_file()
     ):
         raise BuildVerificationError("Missing curriculum guesses snapshot")
-    catalog = successful.intersection(CATALOG_OUTPUTS)
-    if catalog:
-        try:
-            with closing(
-                sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)
-            ) as db:
-                for name in catalog:
-                    for suffix in CATALOG_OUTPUTS[name]:
-                        table = f"catalog_teach_{suffix}"
-                        if not db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
-                            raise BuildVerificationError(
-                                f"Empty school catalog table: {table}"
-                            )
-                if "section_catalog" in catalog:
-                    _verify_section_counts(db)
-        except (sqlite3.Error, ValueError, TypeError, KeyError) as error:
-            raise BuildVerificationError(
-                f"Unreadable school catalog: {error}"
-            ) from error
+    # A failed refresh can reuse a complete cache, but the first publication
+    # must never ship a legacy-only snapshot as the enriched artifact.
+    try:
+        with closing(sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)) as db:
+            for suffixes in CATALOG_OUTPUTS.values():
+                for suffix in suffixes:
+                    table = f"catalog_teach_{suffix}"
+                    if not db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                        raise BuildVerificationError(
+                            f"Empty school catalog table: {table}"
+                        )
+            _verify_section_counts(db)
+    except (sqlite3.Error, ValueError, TypeError, KeyError) as error:
+        raise BuildVerificationError(f"Unreadable school catalog: {error}") from error
     if "rss" in successful:
         feeds = list((build_dir / "rss").glob("*.xml"))
         if not feeds or any(feed.stat().st_size == 0 for feed in feeds):

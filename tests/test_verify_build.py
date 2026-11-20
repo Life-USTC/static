@@ -6,7 +6,9 @@ from pathlib import Path
 
 from tools.verify_build import (
     BUILDER_NAMES,
+    CATALOG_OUTPUTS,
     BuildVerificationError,
+    _verify_builder_outputs,
     _verify_section_counts,
     _write_status_summary,
     verify_build,
@@ -45,6 +47,14 @@ class BuildVerificationTest(unittest.TestCase):
             )
 
             self.assertNotIn("skipped", summary_path.read_text(encoding="utf-8"))
+
+    def test_publication_rejects_a_snapshot_missing_cached_catalog_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sqlite3.connect(root / "life-ustc-static.sqlite").close()
+            builders = {name: {"status": "failed"} for name in BUILDER_NAMES}
+            with self.assertRaisesRegex(BuildVerificationError, "no such table"):
+                _verify_builder_outputs(root, builders)
 
     def test_failed_authenticated_builders_skip_missing_contract_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -89,6 +99,19 @@ class BuildVerificationTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            db = sqlite3.connect(build_dir / "life-ustc-static.sqlite")
+            with db:
+                for suffixes in CATALOG_OUTPUTS.values():
+                    for suffix in suffixes:
+                        table = f"catalog_teach_{suffix}"
+                        db.execute(f"CREATE TABLE {table} (id INTEGER)")
+                        db.execute(f"INSERT INTO {table} VALUES (1)")
+                db.execute("CREATE TABLE metadata (key TEXT, value TEXT)")
+                db.execute(
+                    "INSERT INTO metadata VALUES (?, ?)",
+                    ("catalog_semester_details_1", '{"lesson_profile_rows":0}'),
+                )
+            db.close()
             verify_build(
                 build_dir=build_dir,
                 status_path=status_path,
