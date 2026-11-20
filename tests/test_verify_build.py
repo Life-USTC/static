@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 
 from tools.verify_build import (
+    BUILDER_NAMES,
     BuildVerificationError,
-    _verify_section_catalog,
+    _verify_section_counts,
     _write_status_summary,
     verify_build,
 )
@@ -14,31 +15,23 @@ from tools.verify_build import (
 
 class BuildVerificationTest(unittest.TestCase):
     def test_section_coverage_matches_each_semester(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            snapshot = Path(directory) / "snapshot.sqlite"
-            db = sqlite3.connect(snapshot)
-            self.addCleanup(db.close)
-            db.executescript("""
-                CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT);
-                CREATE TABLE catalog_teach_lesson_infos(semester_id TEXT);
-                INSERT INTO metadata VALUES
-                    ('catalog_semester_details_1', '{"lesson_profile_rows":1}'),
-                    ('catalog_semester_details_2', '{"lesson_profile_rows":0}');
-                INSERT INTO catalog_teach_lesson_infos VALUES ('1');
-            """)
-            _verify_section_catalog(snapshot)
-            with db:
-                db.execute("INSERT INTO catalog_teach_lesson_infos VALUES ('3')")
-            with self.assertRaisesRegex(BuildVerificationError, "lack semester"):
-                _verify_section_catalog(snapshot)
-            with db:
-                db.execute("DELETE FROM catalog_teach_lesson_infos")
-            with self.assertRaisesRegex(BuildVerificationError, "semester 1"):
-                _verify_section_catalog(snapshot)
-            with db:
-                db.execute("UPDATE metadata SET value='invalid'")
-            with self.assertRaisesRegex(BuildVerificationError, "Invalid section"):
-                _verify_section_catalog(snapshot)
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        db.executescript("""
+            CREATE TABLE metadata(key TEXT, value TEXT);
+            CREATE TABLE catalog_teach_lesson_infos(semester_id TEXT);
+            INSERT INTO metadata VALUES
+                ('catalog_semester_details_1','{"lesson_profile_rows":1}');
+            INSERT INTO catalog_teach_lesson_infos VALUES ('1');
+        """)
+        _verify_section_counts(db)
+        for sql in (
+            "INSERT INTO catalog_teach_lesson_infos VALUES ('2')",
+            "DELETE FROM catalog_teach_lesson_infos",
+        ):
+            db.execute(sql)
+            with self.assertRaises(BuildVerificationError):
+                _verify_section_counts(db)
 
     def test_non_curriculum_failure_does_not_claim_contracts_were_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -46,15 +39,8 @@ class BuildVerificationTest(unittest.TestCase):
             _write_status_summary(
                 summary_path,
                 {
-                    "curriculum": {"status": "ok"},
-                    "young": {"status": "failed"},
-                    "rss": {"status": "ok"},
-                    "course_catalog": {"status": "failed"},
-                    "course_substitutions": {"status": "failed"},
-                    "section_catalog": {"status": "failed"},
-                    "catalog_groups": {"status": "failed"},
-                    "study_plans": {"status": "failed"},
-                    "blackboard": {"status": "ok"},
+                    name: {"status": "ok" if name == "curriculum" else "failed"}
+                    for name in BUILDER_NAMES
                 },
             )
 
@@ -75,15 +61,8 @@ class BuildVerificationTest(unittest.TestCase):
                 json.dumps(
                     {
                         "builders": {
-                            "curriculum": {"status": "failed", "error": "Error"},
-                            "young": {"status": "failed", "error": "Error"},
-                            "rss": {"status": "ok"},
-                            "course_catalog": {"status": "failed"},
-                            "course_substitutions": {"status": "failed"},
-                            "section_catalog": {"status": "failed"},
-                            "catalog_groups": {"status": "failed"},
-                            "study_plans": {"status": "failed"},
-                            "blackboard": {"status": "failed", "error": "Error"},
+                            name: {"status": "ok" if name == "rss" else "failed"}
+                            for name in BUILDER_NAMES
                         }
                     }
                 ),

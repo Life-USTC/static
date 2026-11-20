@@ -238,6 +238,30 @@ class SQLiteModelStore:
             [(key, str(value)) for key, value in items.items()],
         )
 
+    def delete_source_fetches(self, source: str) -> None:
+        rows = self.conn.execute(
+            "SELECT id FROM upstream_fetches WHERE source = ?", (source,)
+        )
+        self.delete_fetches([fetch_id for (fetch_id,) in rows])
+
+    def store_fetched_response(
+        self,
+        source: str,
+        url: str,
+        response: BaseModel,
+        *,
+        method: str = "GET",
+        context: Mapping[str, Scalar | None] | None = None,
+        row_context: Mapping[str, Scalar | None] | None = None,
+    ) -> int:
+        """Write a successful request and its rows in the caller's transaction."""
+        fetch_id = self.record_fetch(
+            source=source, method=method, url=url, context=context
+        )
+        return self.store_response(
+            table_name=source, response=response, fetch_id=fetch_id, context=row_context
+        )
+
     def register_response_model(
         self,
         *,

@@ -31,7 +31,7 @@ from src.young import (
     _young_referenced_ids,
     make_young_events,
 )
-from tools.verify_build import verify_build
+from tools.verify_build import BUILDER_NAMES, verify_build
 
 
 def _payload(records: list[dict[str, object]], *, total: int | None = None):
@@ -982,23 +982,11 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                 )
             )
             status = build / "build-status.json"
-            status.write_text(
-                json.dumps(
-                    {
-                        "builders": {
-                            "curriculum": {"status": "failed"},
-                            "course_catalog": {"status": "failed"},
-                            "course_substitutions": {"status": "failed"},
-                            "section_catalog": {"status": "failed"},
-                            "catalog_groups": {"status": "failed"},
-                            "study_plans": {"status": "failed"},
-                            "young": {"status": "ok"},
-                            "rss": {"status": "ok"},
-                            "blackboard": {"status": "failed"},
-                        }
-                    }
-                )
-            )
+            results = {
+                name: {"status": "ok" if name in {"young", "rss"} else "failed"}
+                for name in BUILDER_NAMES
+            }
+            status.write_text(json.dumps({"builders": results}))
             verify_build(
                 build_dir=build,
                 status_path=status,

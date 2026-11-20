@@ -25,24 +25,8 @@ async def refresh_course_substitutions(
     # Distinct rule IDs can describe the same course sets. Keep every source
     # record and both sides, including reverse rules, with their original order.
     with store.conn:
-        store.register_response_model(
-            table_name=CATALOG_COURSE_SUBSTITUTES,
-            response_model=CourseSubstitutesResponse,
-        )
-        old_fetches = [
-            fetch_id
-            for (fetch_id,) in store.conn.execute(
-                "SELECT id FROM upstream_fetches WHERE source = ?",
-                (CATALOG_COURSE_SUBSTITUTES,),
-            )
-        ]
-        store.delete_fetches(old_fetches)
-        fetch_id = store.record_fetch(
-            source=CATALOG_COURSE_SUBSTITUTES, method="GET", url=COURSE_SUBSTITUTES_URL
-        )
-        count = store.store_response(
-            table_name=CATALOG_COURSE_SUBSTITUTES,
-            response=response,
-            fetch_id=fetch_id,
+        store.delete_source_fetches(CATALOG_COURSE_SUBSTITUTES)
+        count = store.store_fetched_response(
+            CATALOG_COURSE_SUBSTITUTES, COURSE_SUBSTITUTES_URL, response
         )
         store.put_metadata({f"{CATALOG_COURSE_SUBSTITUTES}_count": count})

@@ -498,15 +498,8 @@ async def _store_catalog_semesters(
         ids
     ) != len(set(ids)):
         raise ValueError("Catalog semester response has invalid or duplicate IDs")
-    fetch_id = store.record_fetch(
-        source="catalog_teach_semester_list",
-        method="GET",
-        url=CATALOG_SEMESTER_URL,
-    )
-    count = store.store_response(
-        table_name="catalog_teach_semester_list",
-        response=response,
-        fetch_id=fetch_id,
+    count = store.store_fetched_response(
+        CATALOG_SEMESTERS, CATALOG_SEMESTER_URL, response
     )
     store.put_metadata({"catalog_teach_semester_list_count": count})
     return parse_semesters(payload)
@@ -525,15 +518,8 @@ async def _store_catalog_departments(
         fetch_context="request",
     )
     response = DepartmentCollegeTreeResponse.model_validate(payload)
-    fetch_id = store.record_fetch(
-        source="catalog_teach_department_college_tree",
-        method="GET",
-        url=CATALOG_DEPARTMENT_URL,
-    )
-    count = store.store_response(
-        table_name="catalog_teach_department_college_tree",
-        response=response,
-        fetch_id=fetch_id,
+    count = store.store_fetched_response(
+        CATALOG_DEPARTMENTS, CATALOG_DEPARTMENT_URL, response
     )
     store.put_metadata({"catalog_teach_department_college_tree_count": count})
 
@@ -600,17 +586,9 @@ async def _store_catalog_exams(
     if response.root is None:
         raise ValueError("Catalog exam response must be a list")
     _delete_cached_exams(store, semester_id)
-    fetch_id = store.record_fetch(
-        source="catalog_teach_exam_list",
-        method="GET",
-        url=url,
-        context={"semester_id": semester_id},
-    )
-    store.store_response(
-        table_name="catalog_teach_exam_list",
-        response=response,
-        fetch_id=fetch_id,
-        context={"semester_id": semester_id},
+    context = {"semester_id": semester_id}
+    store.store_fetched_response(
+        CATALOG_EXAMS, url, response, context=context, row_context=context
     )
 
 
@@ -682,17 +660,14 @@ async def _store_jw_schedule_chunks(
                     f"JW schedule/group list is incomplete for {semester_id}"
                 )
         schedule_responses.append(response)
-        fetch_id = store.record_fetch(
-            source="jw_ws_schedule_table_datum",
+        context = {"semester_id": semester_id, "chunk_index": chunk_index}
+        store.store_fetched_response(
+            JW_SCHEDULES,
+            JW_SCHEDULE_TABLE_URL,
+            response,
             method="POST",
-            url=JW_SCHEDULE_TABLE_URL,
-            context={"semester_id": semester_id, "chunk_index": chunk_index},
-        )
-        store.store_response(
-            table_name="jw_ws_schedule_table_datum",
-            response=response,
-            fetch_id=fetch_id,
-            context={"semester_id": semester_id, "chunk_index": chunk_index},
+            context=context,
+            row_context=context,
         )
 
     if not _has_cached_jw_schedule(store, semester_id):
@@ -780,17 +755,13 @@ async def _store_semester(
         previous_course_ids_by_code=previous_course_ids_by_code,
     )
     _delete_cached_semester(store, guesses, semester_id)
-    fetch_id = store.record_fetch(
-        source="catalog_teach_lesson_list_for_teach",
-        method="GET",
-        url=f"{CATALOG_LESSON_URL_PREFIX}/{semester_id}",
-        context={"semester_id": semester_id},
-    )
-    lesson_count = store.store_response(
-        table_name="catalog_teach_lesson_list_for_teach",
-        response=catalog_response,
-        fetch_id=fetch_id,
-        context={"semester_id": semester_id},
+    context = {"semester_id": semester_id}
+    lesson_count = store.store_fetched_response(
+        CATALOG_LESSONS,
+        f"{CATALOG_LESSON_URL_PREFIX}/{semester_id}",
+        catalog_response,
+        context=context,
+        row_context=context,
     )
     logger.info("Stored %s catalog lessons for semester %s", lesson_count, semester_id)
 

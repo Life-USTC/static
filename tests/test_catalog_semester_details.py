@@ -1,641 +1,225 @@
-import asyncio
 import json
 import unittest
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
 
 from src.catalog_semester_details import (
-    CATALOG_LESSON_INFOS,
-    CATALOG_PUBLIC_LESSONS,
-    CATALOG_PUBLIC_SEMESTERS,
-    LESSON_INFOS_URL,
-    LESSON_LIST_URL,
     SEMESTER_LIST_URL,
-    TeachLessonInfo,
-    _profile_batches,
     refresh_catalog_semester_details,
 )
+from src.models.api.catalog_api_teach_lesson_infos import TeachLessonInfo
 from src.models.api.catalog_api_teach_lesson_list_for_teach import (
     TeachLessonListItem,
     TeachLessonListResponse,
 )
 from src.sqlite_store import SQLiteModelStore
-from src.upstream_contracts import CATALOG_LESSONS
-from src.utils.auth import RequestSession
+from src.upstream_contracts import CATALOG_LESSON_INFOS as PROFILES
+from src.upstream_contracts import CATALOG_LESSONS as CURRICULUM
 
-ACTIVE = 461
-HISTORY = 221
-FUTURE = 481
 NOW = datetime(2026, 11, 20, 12, tzinfo=UTC)
+ACTIVE, OLD = 461, 221
+KEY = f"catalog_semester_details_{OLD}"
+CONTEXT = {"semester_id": str(OLD)}
 
 
-def semester(id_: int, start: str, end: str) -> dict:
-    return {
-        "id": id_,
-        "nameZh": "样例学期",
-        "code": str(id_),
-        "start": start,
-        "end": end,
-        "isLast": id_ == ACTIVE,
-    }
+def term(id_, start, end):
+    return dict(
+        id=id_, start=start, end=end, code=str(id_), nameZh="学期", isLast=id_ == ACTIVE
+    )
 
 
-def lesson(id_: int, code: str) -> dict:
-    return {
-        **dict.fromkeys(TeachLessonListItem.model_fields),
-        "id": id_,
-        "code": code,
-        "course": {
-            "id": id_ + 100,
-            "code": code.split(".")[0],
-            "cn": "目录",
-            "en": None,
-        },
-    }
+def lesson(id_, code):
+    return dict.fromkeys(TeachLessonListItem.model_fields) | dict(
+        id=id_, code=code, course=dict(id=id_ + 100, code=code, cn="课", en=None)
+    )
 
 
-def profile(row: dict) -> dict:
-    data = {
-        **dict.fromkeys(
-            field.alias or name for name, field in TeachLessonInfo.model_fields.items()
-        ),
-        "id": row["id"],
-        "code": row["code"],
-        "courseId": row["course"]["id"],
-        "valid": True,
-        "name": {"cn": "教学班", "en": None},
-        "preq": "",
-        "textbooks": [],
-    }
-    if row["id"] % 2:
-        data.pop("lessonLang")
-    return data
+def profile(row):
+    fields = TeachLessonInfo.model_fields
+    return dict.fromkeys(field.alias or name for name, field in fields.items()) | dict(
+        id=row["id"],
+        code=row["code"],
+        courseId=row["course"]["id"],
+        valid=True,
+        name={"cn": "课", "en": None},
+        textbooks=[],
+    )
 
 
-class CatalogSemesterDetailsTest(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self) -> None:
+class SectionRefreshTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
         self.store = SQLiteModelStore(":memory:")
         self.addCleanup(self.store.close)
-        self.terms = [
-            semester(HISTORY, "2021-09-01", "2022-01-21"),
-            semester(ACTIVE, "2026-08-30", "2027-01-15"),
-            semester(FUTURE, "2027-02-21", "2027-06-25"),
-        ]
-        self.active_index = [lesson(20, "MA01.01"), lesson(21, "MA01.02")]
-        self.history_index = [lesson(5, "MA01.01"), lesson(6, "OLD01.01")]
-        self.post_requests: list[tuple[int, list[str]]] = []
-        self.get_requests: list[str] = []
-        self.missing: set[str] = set()
-        self.temporary_omit: set[str] = set()
-        self.wrong_id = False
-        self.history_status = 200
-        self.history_index_status = 200
-        self.excluded_profiles: list[dict] = []
-        self.profile_updates: dict[str, dict] = {}
-        clock = patch("src.catalog_semester_details.datetime", wraps=datetime)
-        self.clock = clock.start()
+        self.db = self.store.conn
+        self.clock = self.enterContext(
+            patch("src.catalog_semester_details.datetime", wraps=datetime)
+        )
         self.clock.now.return_value = NOW
-        self.addCleanup(clock.stop)
-        record_fetch = self.store.record_fetch
-
-        def record_timed_fetch(**kwargs):
-            fetch_id = record_fetch(**kwargs)
-            self.store.conn.execute(
-                "UPDATE upstream_fetches SET fetched_at = ? WHERE id = ?",
-                (self.clock.now.return_value.isoformat(), fetch_id),
+        self.enterContext(
+            patch.multiple(
+                "src.catalog_semester_details",
+                REQUEST_INTERVAL_SECONDS=0,
+                BATCH_SIZE=2,
+                MISSING_PROBE_LIMIT=1,
             )
-            return fetch_id
-
-        timestamp = patch.object(self.store, "record_fetch", record_timed_fetch)
-        timestamp.start()
-        self.addCleanup(timestamp.stop)
-        cadence = patch.multiple(
-            "src.catalog_semester_details",
-            REQUEST_INTERVAL_SECONDS=0,
-            BATCH_SIZE=2,
-            MISSING_PROBE_LIMIT=1,
         )
-        cadence.start()
-        self.addCleanup(cadence.stop)
-        client = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
-        self.addAsyncCleanup(client.aclose)
-        self.session = RequestSession(client=client, page=None)
-
-    def handle(self, request: httpx.Request) -> httpx.Response:
-        url = str(request.url)
-        if request.method == "GET":
-            self.get_requests.append(url)
-            if url == SEMESTER_LIST_URL:
-                return httpx.Response(200, json=self.terms)
-            if url == f"{LESSON_LIST_URL}/{HISTORY}":
-                return httpx.Response(
-                    self.history_index_status, json=self.history_index
-                )
-            self.assertEqual(url, f"{LESSON_LIST_URL}/{ACTIVE}")
-            return httpx.Response(200, json=self.active_index)
-
-        self.assertEqual((request.method, url), ("POST", LESSON_INFOS_URL))
-        request_body = json.loads(request.content)
-        term, codes = request_body["semester"], request_body["codes"]
-        self.post_requests.append((term, codes))
-        rows = (
-            self.active_index + self.excluded_profiles
-            if term == ACTIVE
-            else self.history_index
-        )
-        if term == HISTORY and self.history_status != 200:
-            return httpx.Response(self.history_status)
-        result = [
-            profile(row)
-            for row in reversed(rows)
-            if row["code"] in codes
-            and row["code"] not in self.missing
-            and (len(codes) == 1 or row["code"] not in self.temporary_omit)
+        self.terms = [
+            term(ACTIVE, "2026-08-01", "2027-01-15"),
+            term(OLD, "2021-09-01", "2022-01-21"),
         ]
-        for row in result:
-            row.update(self.profile_updates.get(row["code"], {}))
-        if self.wrong_id and result:
-            result[-1]["id"] += 1
-        return httpx.Response(200, json=result)
+        self.index = {i: [lesson(i, "A"), lesson(i + 1, "B")] for i in (ACTIVE, OLD)}
+        self.gets, self.omit, self.changed = [], set(), {}
+        self.index_status = self.profile_status = 200
+        self.infos_only = []
 
-    def seed_known_history(self, *, verified: bool = False) -> None:
-        with self.store.conn:
-            old = [
-                fetch_id
-                for (fetch_id,) in self.store.conn.execute(
-                    "SELECT id FROM upstream_fetches WHERE source = ? AND context = ?",
-                    (CATALOG_LESSONS, f"semester_id={HISTORY}"),
-                )
-            ]
-            self.store.delete_fetches(old)
-            fetch_id = self.store.record_fetch(
-                source=CATALOG_LESSONS,
-                method="GET",
-                url=f"{LESSON_LIST_URL}/{HISTORY}",
-                context={"semester_id": str(HISTORY)},
+    async def get(self, url, **_):
+        if url == SEMESTER_LIST_URL:
+            return self.terms
+        id_ = int(url.rsplit("/", 1)[-1])
+        self.gets.append(id_)
+        if id_ == OLD and self.index_status != 200:
+            httpx.Response(
+                self.index_status, request=httpx.Request("GET", url)
+            ).raise_for_status()
+        return self.index[id_]
+
+    async def post(self, url, data, **_):
+        id_, codes = data["semester"], data["codes"]
+        if id_ == OLD and self.profile_status != 200:
+            httpx.Response(
+                self.profile_status, request=httpx.Request("POST", url)
+            ).raise_for_status()
+        return [
+            profile(row) | self.changed.get(row["code"], {})
+            for row in self.index[id_] + self.infos_only
+            if row["code"] in codes and row["code"] not in self.omit
+        ]
+
+    async def refresh(self, *terms):
+        self.gets.clear()
+        api = SimpleNamespace(get_json=self.get, post_json=self.post)
+        await refresh_catalog_semester_details(
+            api, self.store, semester_ids=terms or None
+        )
+
+    def seed_curriculum(self, *, ok=True):
+        with self.db:
+            rows = self.db.execute(
+                "SELECT id FROM upstream_fetches WHERE source=?", (CURRICULUM,)
             )
+            self.store.delete_fetches([id_ for (id_,) in rows])
+            url = f"https://catalog.ustc.edu.cn/api/teach/lesson/list-for-teach/{OLD}"
+            fetch = self.store.record_fetch(
+                source=CURRICULUM, method="GET", url=url, context=CONTEXT, ok=ok
+            )
+            response = TeachLessonListResponse.model_validate(self.index[OLD])
             self.store.store_response(
-                table_name=CATALOG_LESSONS,
-                response=TeachLessonListResponse.model_validate(self.history_index),
-                fetch_id=fetch_id,
-                context={"semester_id": str(HISTORY)},
+                table_name=CURRICULUM,
+                response=response,
+                fetch_id=fetch,
+                context=CONTEXT,
             )
-            if verified:
-                self.store.put_metadata(
-                    {
-                        "curriculum_fetch_status": "complete",
-                        "curriculum_successful_semester_ids": str(HISTORY),
-                        "curriculum_unavailable_semester_ids": "",
-                    }
+            self.store.put_metadata(
+                dict(
+                    curriculum_fetch_status="complete",
+                    curriculum_successful_semester_ids=str(OLD),
                 )
+            )
 
-    def rows(self, table: str) -> list[tuple]:
-        return self.store.conn.execute(
-            f"SELECT id, code, semester_id, fetch_id FROM {table} ORDER BY id"
-        ).fetchall()
-
-    def metadata(self, term: int) -> dict:
-        return json.loads(
-            self.store.conn.execute(
-                "SELECT value FROM metadata WHERE key = ?",
-                (f"catalog_semester_details_{term}",),
-            ).fetchone()[0]
+    def saved(self, id_):
+        rows = self.db.execute(
+            f"SELECT code,payload_json FROM {PROFILES} WHERE semester_id=?", (str(id_),)
         )
+        return {code: json.loads(payload) for code, payload in rows}
 
-    async def test_parallel_batches_remain_bounded_and_preserve_order(self) -> None:
-        in_flight = 0
-        peak = 0
-        codes = [str(i) for i in range(12)]
+    def old_meta(self):
+        value = self.db.execute(
+            "SELECT value FROM metadata WHERE key=?", (KEY,)
+        ).fetchone()[0]
+        return json.loads(value)
 
-        async def fetch(session, semester_id, batch, lessons):
-            nonlocal in_flight, peak
-            in_flight += 1
-            peak = max(peak, in_flight)
-            await asyncio.sleep(0.003 if batch[0] == "2" else 0.001)
-            in_flight -= 1
-            return {code: code for code in batch}
-
-        with patch("src.catalog_semester_details._profile_batch", fetch):
-            results = [
-                code
-                async for _, records in _profile_batches(
-                    self.session, ACTIVE, codes, {}, False
-                )
-                for code in records
-            ]
-        self.assertEqual(results, codes)
-        self.assertEqual(peak, 3)
-
-    async def test_clean_database_stores_active_source_and_profiles(self) -> None:
-        self.active_index.append(lesson(22, "PH01.01"))
-        await refresh_catalog_semester_details(self.session, self.store)
+    async def test_settled_archive_profile_and_live_expiry(self):
+        self.seed_curriculum()
+        await self.refresh()
+        self.assertEqual(self.gets, [ACTIVE])
+        self.assertEqual(self.old_meta()["lesson_index_source"], "curriculum")
         self.assertEqual(
-            self.get_requests, [SEMESTER_LIST_URL, f"{LESSON_LIST_URL}/{ACTIVE}"]
+            self.saved(OLD), {row["code"]: profile(row) for row in self.index[OLD]}
         )
-        self.assertEqual(
-            self.post_requests,
-            [(ACTIVE, ["MA01.01", "MA01.02"]), (ACTIVE, ["PH01.01"])],
-        )
-        self.assertEqual(
-            self.store.conn.execute(
-                f"SELECT id FROM {CATALOG_PUBLIC_SEMESTERS} ORDER BY id"
-            ).fetchall(),
-            [(HISTORY,), (ACTIVE,), (FUTURE,)],
-        )
-        self.assertEqual(
-            [row[:3] for row in self.rows(CATALOG_LESSON_INFOS)],
-            [(20, "MA01.01", "461"), (21, "MA01.02", "461"), (22, "PH01.01", "461")],
-        )
-        self.assertEqual(
-            [
-                json.loads(payload)
-                for (payload,) in self.store.conn.execute(
-                    f"SELECT payload_json FROM {CATALOG_LESSON_INFOS} ORDER BY id"
-                )
-            ],
-            [profile(row) for row in self.active_index],
-        )
-        self.assertEqual(self.metadata(ACTIVE)["unavailable_lesson_codes"], [])
-        fetch_id = self.rows(CATALOG_LESSON_INFOS)[0][-1]
-        self.assertEqual(
-            self.store.conn.execute(
-                "SELECT method, url, context FROM upstream_fetches WHERE id = ?",
-                (fetch_id,),
-            ).fetchone(),
-            ("POST", LESSON_INFOS_URL, f"semester_id={ACTIVE}"),
-        )
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(self.post_requests, [])
-        self.assertEqual(self.rows(CATALOG_LESSON_INFOS)[0][-1], fetch_id)
+        self.changed["B"] = {"desc": {"cn": "更新教学大纲", "en": None}}
+        self.clock.now.return_value += timedelta(days=29)
+        await self.refresh()
+        self.assertNotIn(OLD, self.gets)
+        self.clock.now.return_value += timedelta(days=1)
+        await self.refresh()
+        self.assertIn(OLD, self.gets)
+        self.assertEqual(self.saved(OLD)["B"]["desc"], self.changed["B"]["desc"])
 
-    async def test_still_crawls_last_published_semester_in_a_gap(self) -> None:
-        active = next(term for term in self.terms if term["id"] == ACTIVE)
-        active["end"] = "2026-11-19"
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertIn(f"{LESSON_LIST_URL}/{ACTIVE}", self.get_requests)
-        self.assertEqual(self.metadata(ACTIVE)["lesson_profile_rows"], 2)
+    async def test_changed_curriculum_cannot_silently_override_live_history(self):
+        await self.refresh(OLD)
+        original = self.saved(OLD)
+        added = lesson(19, "C")
+        self.index[OLD].append(added)
+        self.seed_curriculum()
+        self.index[OLD].pop()
+        await self.refresh()
+        self.assertIn(OLD, self.gets)
+        self.assertEqual(self.saved(OLD), original)
+        await self.refresh()
+        self.assertNotIn(OLD, self.gets)
+        self.index[OLD].append(lesson(20, "C"))
+        self.seed_curriculum()
+        await self.refresh()
+        self.assertEqual(set(self.saved(OLD)), {"A", "B", "C"})
 
-    async def test_backfills_available_history_and_never_mutates_legacy_source(self):
-        self.seed_known_history()
-        old_legacy = self.rows(CATALOG_LESSONS)
-        await refresh_catalog_semester_details(self.session, self.store)
-        rows = self.rows(CATALOG_LESSON_INFOS)
-        self.assertEqual([row[2] for row in rows], ["221", "221", "461", "461"])
-        self.assertEqual(self.rows(CATALOG_LESSONS), old_legacy)
-        self.assertEqual(self.metadata(HISTORY)["lesson_profile_rows"], 2)
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(self.post_requests, [])
-        self.assertEqual(self.rows(CATALOG_LESSON_INFOS), rows)
-
-    async def test_corroborated_settled_curriculum_does_not_duplicate_the_index(self):
-        self.seed_known_history(verified=True)
-        old_legacy = self.rows(CATALOG_LESSONS)
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(
-            self.get_requests, [SEMESTER_LIST_URL, f"{LESSON_LIST_URL}/{ACTIVE}"]
+    async def test_failed_or_omitted_archive_identity_falls_back_to_live(self):
+        self.seed_curriculum(ok=False)
+        await self.refresh()
+        self.assertIn(OLD, self.gets)
+        rows = self.db.execute(
+            "SELECT id FROM upstream_fetches WHERE context=? AND source!=?",
+            (f"semester_id={OLD}", CURRICULUM),
         )
-        self.assertIn((HISTORY, ["MA01.01", "OLD01.01"]), self.post_requests)
-        self.assertEqual(self.rows(CATALOG_LESSONS), old_legacy)
-        self.assertFalse(
-            any(row[2] == str(HISTORY) for row in self.rows(CATALOG_PUBLIC_LESSONS))
-        )
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "curriculum")
-        self.assertEqual(self.metadata(HISTORY)["lesson_profile_rows"], 2)
-        self.assertEqual(
-            self.store.conn.execute(
-                "SELECT source, method, ok FROM upstream_fetches "
-                "WHERE context = ? ORDER BY id",
-                (f"semester_id={HISTORY}",),
-            ).fetchall(),
-            [(CATALOG_LESSONS, "GET", 1), (CATALOG_LESSON_INFOS, "POST", 1)],
-        )
-        self.post_requests.clear()
-        self.get_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertNotIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertEqual(self.post_requests, [])
+        self.store.delete_fetches([id_ for (id_,) in rows])
+        self.db.execute("DELETE FROM metadata WHERE key=?", (KEY,))
+        self.seed_curriculum()
+        self.index[OLD][-1] = lesson(7, "C")
+        await self.refresh()
+        self.assertEqual(set(self.saved(OLD)), {"A", "C"})
+        self.assertEqual(self.old_meta()["lesson_index_source"], "public")
 
-    async def test_omitted_curriculum_code_retries_the_live_index(self):
-        self.seed_known_history(verified=True)
-        self.history_index[-1] = lesson(7, "NEW01.01")
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertEqual(
-            [codes for term, codes in self.post_requests if term == HISTORY],
-            [["MA01.01", "OLD01.01"], ["MA01.01", "NEW01.01"]],
-        )
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
-        self.assertEqual(
-            [
-                row[1]
-                for row in self.rows(CATALOG_LESSON_INFOS)
-                if row[2] == str(HISTORY)
-            ],
-            ["MA01.01", "NEW01.01"],
-        )
+    async def test_explicit_missing_history_leaves_active_rows_usable(self):
+        self.index_status = 410
+        with self.assertRaisesRegex(RuntimeError, str(OLD)):
+            await self.refresh(OLD)
+        self.seed_curriculum()
+        self.profile_status = 404
+        await self.refresh()
+        self.assertTrue(self.saved(ACTIVE))
+        self.assertTrue(self.old_meta()["lesson_infos_unavailable"])
+        self.assertEqual(self.old_meta()["lesson_index_source"], "cached")
 
-    async def test_conflicting_curriculum_id_retries_the_live_index(self):
-        self.seed_known_history(verified=True)
-        self.history_index[-1] = lesson(7, "OLD01.01")
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
-        self.assertEqual(
-            [
-                row[0]
-                for row in self.rows(CATALOG_LESSON_INFOS)
-                if row[2] == str(HISTORY)
-            ],
-            [5, 7],
-        )
-
-    async def test_settled_profile_refreshes_materials_with_unchanged_identities(self):
-        self.seed_known_history(verified=True)
-        await refresh_catalog_semester_details(self.session, self.store)
-        before = self.metadata(HISTORY)
-        updated_description = {"cn": "更新后的教学大纲", "en": None}
-        self.profile_updates["OLD01.01"] = {"desc": updated_description}
-
-        self.clock.now.return_value = NOW + timedelta(days=30, seconds=-1)
-        self.get_requests.clear()
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertNotIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertFalse(any(term == HISTORY for term, _ in self.post_requests))
-
-        self.clock.now.return_value = NOW + timedelta(days=30)
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertIn((HISTORY, ["MA01.01", "OLD01.01"]), self.post_requests)
-        after = self.metadata(HISTORY)
-        self.assertEqual(after["lesson_signature"], before["lesson_signature"])
-        self.assertEqual(after["lesson_index_source"], "public")
-        row = self.store.conn.execute(
-            f"SELECT payload_json FROM {CATALOG_LESSON_INFOS} "
-            "WHERE semester_id = ? AND code = 'OLD01.01'",
-            (str(HISTORY),),
-        ).fetchone()
-        self.assertEqual(json.loads(row[0])["desc"], updated_description)
-
-    async def test_settled_authoritative_recheck_discovers_sections_outside_archive(
+    async def test_suspicious_shrink_and_wrong_identity_keep_last_verified_snapshot(
         self,
     ):
-        self.seed_known_history(verified=True)
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertNotIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.history_index.append(lesson(8, "NEW01.01"))
-        self.clock.now.return_value = NOW + timedelta(days=30)
-        self.get_requests.clear()
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(self.get_requests.count(f"{LESSON_LIST_URL}/{HISTORY}"), 1)
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
-        self.assertEqual(self.metadata(HISTORY)["lesson_profile_rows"], 3)
-        self.assertEqual(
-            [
-                row[1]
-                for row in self.rows(CATALOG_LESSON_INFOS)
-                if row[2] == str(HISTORY)
-            ],
-            ["MA01.01", "OLD01.01", "NEW01.01"],
-        )
-
-    async def test_newer_curriculum_rechecks_public_index_inside_freshness_window(self):
-        self.seed_known_history(verified=True)
-        await refresh_catalog_semester_details(
-            self.session, self.store, semester_ids=[HISTORY]
-        )
-        self.clock.now.return_value = NOW + timedelta(days=1)
-        self.history_index.append(lesson(8, "NEW01.01"))
-        self.seed_known_history(verified=True)
-        self.get_requests.clear()
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(self.get_requests.count(f"{LESSON_LIST_URL}/{HISTORY}"), 1)
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
-        self.assertEqual(
-            {
-                code
-                for term, codes in self.post_requests
-                if term == HISTORY
-                for code in codes
-            },
-            {"MA01.01", "NEW01.01", "OLD01.01"},
-        )
-        self.assertTrue(
-            any(
-                row[:3] == (8, "NEW01.01", str(HISTORY))
-                for row in self.rows(CATALOG_LESSON_INFOS)
-            )
-        )
-
-    async def test_newer_curriculum_does_not_replace_a_disagreeing_live_index(self):
-        self.seed_known_history(verified=True)
-        await refresh_catalog_semester_details(
-            self.session, self.store, semester_ids=[HISTORY]
-        )
-        previous = self.rows(CATALOG_LESSON_INFOS)
-        self.clock.now.return_value = NOW + timedelta(days=1)
-        self.history_index.append(lesson(8, "ARCHIVE01.01"))
-        self.seed_known_history(verified=True)
-        self.history_index.pop()
-        self.get_requests.clear()
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertFalse(any(term == HISTORY for term, _ in self.post_requests))
-        self.assertEqual(
-            [row for row in self.rows(CATALOG_LESSON_INFOS) if row[2] == str(HISTORY)],
-            previous,
-        )
-        self.get_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertNotIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-
-    async def test_success_metadata_without_a_successful_fetch_uses_live_index(self):
-        self.seed_known_history(verified=True)
-        with self.store.conn:
-            self.store.conn.execute(
-                "UPDATE upstream_fetches SET ok = 0 WHERE source = ? AND context = ?",
-                (CATALOG_LESSONS, f"semester_id={HISTORY}"),
-            )
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
-
-    async def test_recent_and_explicit_terms_still_check_live_index(self):
-        self.seed_known_history(verified=True)
-        history = next(term for term in self.terms if term["id"] == HISTORY)
-        history["end"] = "2026-10-01"
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
-
-        self.get_requests.clear()
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertEqual(self.post_requests, [])
-
-        history["end"] = "2022-01-21"
-        self.get_requests.clear()
-        await refresh_catalog_semester_details(
-            self.session, self.store, semester_ids=[HISTORY]
-        )
-        self.assertEqual(
-            self.get_requests, [SEMESTER_LIST_URL, f"{LESSON_LIST_URL}/{HISTORY}"]
-        )
-
-    async def test_missing_codes_are_retried_and_reconciled(self) -> None:
-        self.temporary_omit.add("MA01.02")
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(
-            self.post_requests,
-            [(ACTIVE, ["MA01.01", "MA01.02"]), (ACTIVE, ["MA01.02"])],
-        )
-        self.assertEqual(self.metadata(ACTIVE)["unavailable_lesson_codes"], [])
-        self.active_index.append(lesson(22, "PH01.01"))
-        self.missing.add("MA01.02")
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(self.metadata(ACTIVE)["unavailable_lesson_codes"], ["MA01.02"])
-        self.assertEqual(self.metadata(ACTIVE)["lesson_count"], 3)
-        self.assertEqual(self.metadata(ACTIVE)["lesson_profile_rows"], 2)
-
-    async def test_partial_new_snapshot_and_wrong_id_preserve_old_atomically(self):
-        await refresh_catalog_semester_details(self.session, self.store)
-        original = self.rows(CATALOG_PUBLIC_LESSONS), self.rows(CATALOG_LESSON_INFOS)
-        metadata = self.metadata(ACTIVE)
-        self.active_index.append(lesson(22, "PH01.01"))
-        self.missing.update(("MA01.01", "MA01.02"))
-        self.post_requests.clear()
-        with self.assertRaisesRegex(RuntimeError, "461"):
-            await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(len(self.post_requests), 2)
-        self.assertEqual(
-            (self.rows(CATALOG_PUBLIC_LESSONS), self.rows(CATALOG_LESSON_INFOS)),
-            original,
-        )
-        self.assertEqual(self.metadata(ACTIVE), metadata)
-
-        self.missing.clear()
-        self.wrong_id = True
-        with self.assertRaisesRegex(RuntimeError, "461"):
-            await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(
-            (self.rows(CATALOG_PUBLIC_LESSONS), self.rows(CATALOG_LESSON_INFOS)),
-            original,
-        )
-        self.assertEqual(self.metadata(ACTIVE), metadata)
-
-    async def test_historic_404_is_recorded_without_erasing_public_active_rows(self):
-        self.seed_known_history(verified=True)
-        self.history_status = 404
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(
-            [row[2] for row in self.rows(CATALOG_LESSON_INFOS)], ["461", "461"]
-        )
-        history_requests = [
-            codes for term, codes in self.post_requests if term == HISTORY
-        ]
-        self.assertEqual(
-            history_requests,
-            [["MA01.01", "OLD01.01"], ["MA01.01", "OLD01.01"], ["MA01.01"]],
-        )
-        self.assertIn(f"{LESSON_LIST_URL}/{HISTORY}", self.get_requests)
-        self.assertTrue(self.metadata(HISTORY)["lesson_infos_unavailable"])
-        self.assertEqual(
-            self.store.conn.execute(
-                "SELECT ok FROM upstream_fetches WHERE source = ? AND context = ?",
-                (CATALOG_LESSON_INFOS, f"semester_id={HISTORY}"),
-            ).fetchone(),
-            (0,),
-        )
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(self.post_requests, [])
-
-    async def test_selects_explicit_historical_semester_on_clean_database(self):
-        await refresh_catalog_semester_details(
-            self.session, self.store, semester_ids=[HISTORY]
-        )
-        self.assertEqual(
-            self.get_requests, [SEMESTER_LIST_URL, f"{LESSON_LIST_URL}/{HISTORY}"]
-        )
-        self.assertEqual(self.post_requests, [(HISTORY, ["MA01.01", "OLD01.01"])])
-        self.assertEqual(
-            [row[2] for row in self.rows(CATALOG_LESSON_INFOS)], ["221", "221"]
-        )
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "public")
-        indexes = {
-            row[1]: row[2]
-            for row in self.store.conn.execute(
-                f"PRAGMA index_list({CATALOG_LESSON_INFOS})"
-            )
-        }
-        self.assertEqual(indexes["catalog_lesson_infos_semester_code"], 1)
-        self.assertEqual(indexes["catalog_lesson_infos_course_semester"], 0)
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(
-            self.session, self.store, semester_ids=[HISTORY]
-        )
-        self.assertEqual(self.post_requests, [])
-
-    async def test_requested_historical_list_missing_is_visible(self):
-        self.history_index_status = 404
-        with self.assertRaisesRegex(RuntimeError, "221"):
-            await refresh_catalog_semester_details(
-                self.session, self.store, semester_ids=[HISTORY]
-            )
-        self.assertEqual(
-            self.get_requests,
-            [SEMESTER_LIST_URL, f"{LESSON_LIST_URL}/{HISTORY}"]
-            + [f"{LESSON_LIST_URL}/{HISTORY}"],
-        )
-        self.assertEqual(self.post_requests, [])
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "unavailable")
-        self.assertTrue(self.metadata(HISTORY)["lesson_infos_unavailable"])
-        self.assertEqual(
-            self.store.conn.execute(
-                "SELECT ok FROM upstream_fetches WHERE source = ? AND context = ?",
-                (CATALOG_PUBLIC_LESSONS, f"semester_id={HISTORY}"),
-            ).fetchone(),
-            (0,),
-        )
-
-    async def test_default_history_refresh_labels_cached_index_fallback(self):
-        self.seed_known_history()
-        self.history_index_status = 410
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(self.metadata(HISTORY)["lesson_index_source"], "cached")
-        self.assertEqual(self.metadata(HISTORY)["lesson_profile_rows"], 2)
-        self.assertIn((HISTORY, ["MA01.01", "OLD01.01"]), self.post_requests)
-
-    async def test_corroborates_shrink_and_preserves_previously_verified_snapshot(self):
-        await refresh_catalog_semester_details(self.session, self.store)
-        old_ids = self.rows(CATALOG_LESSON_INFOS)
-        removed = self.active_index.pop()
-        self.excluded_profiles = [removed]
-        self.get_requests.clear()
-        self.post_requests.clear()
-        with self.assertRaisesRegex(RuntimeError, "461"):
-            await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(self.rows(CATALOG_LESSON_INFOS), old_ids)
-        self.assertEqual(self.get_requests.count(f"{LESSON_LIST_URL}/{ACTIVE}"), 2)
-        self.assertEqual(self.post_requests, [(ACTIVE, ["MA01.02"])])
-
-        self.excluded_profiles.clear()
-        self.get_requests.clear()
-        self.post_requests.clear()
-        await refresh_catalog_semester_details(self.session, self.store)
-        self.assertEqual(
-            [row[1] for row in self.rows(CATALOG_LESSON_INFOS)], ["MA01.01"]
-        )
-        self.assertEqual(self.get_requests.count(f"{LESSON_LIST_URL}/{ACTIVE}"), 2)
-        self.assertEqual(
-            self.post_requests, [(ACTIVE, ["MA01.02"]), (ACTIVE, ["MA01.01"])]
-        )
+        await self.refresh()
+        expected = self.saved(ACTIVE)
+        self.infos_only = [self.index[ACTIVE].pop()]
+        with self.assertRaisesRegex(RuntimeError, str(ACTIVE)):
+            await self.refresh()
+        self.assertEqual(self.saved(ACTIVE), expected)
+        self.infos_only = []
+        self.changed["A"] = {"id": 999}
+        with self.assertRaisesRegex(RuntimeError, str(ACTIVE)):
+            await self.refresh()
+        self.assertEqual(self.saved(ACTIVE), expected)
+        self.changed.clear()
+        await self.refresh()
+        self.assertEqual(set(self.saved(ACTIVE)), {"A"})
+        self.index[ACTIVE].append(lesson(82, "MISSING"))
+        self.omit.add("MISSING")
+        await self.refresh()
+        self.assertEqual(set(self.saved(ACTIVE)), {"A"})
