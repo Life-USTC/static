@@ -112,12 +112,12 @@ class USTCSession:
             )
         }
         if previous != "credentials":
-            waits["credentials"] = self.page.locator(
-                'input[name="username"]:not([type="hidden"])'
-            ).wait_for(state="visible")
+            waits["credentials"] = self.page.locator("#nameInput").wait_for(
+                state="visible"
+            )
         if previous != "totp":
-            waits["totp"] = self.page.locator(
-                "div.ant-tabs-tab:nth-of-type(2)"
+            waits["totp"] = self.page.get_by_role(
+                "tab", name="动态口令", exact=True
             ).wait_for(state="visible")
         tasks = {stage: asyncio.create_task(wait) for stage, wait in waits.items()}
         try:
@@ -149,25 +149,23 @@ class USTCSession:
                     seen.add(stage)
                     self.logger.info("School authentication: %s", stage)
                     if stage == "credentials":
-                        await self.page.locator(
-                            'input[name="username"]:not([type="hidden"])'
-                        ).fill(self.username)
-                        await self.page.locator(
-                            'input[type="password"]:not([type="hidden"])'
-                        ).fill(self.password)
+                        await self.page.locator("#nameInput").fill(self.username)
+                        await self.page.locator('input[type="password"]:visible').fill(
+                            self.password
+                        )
                         await self.page.locator("button#submitBtn").click()
                     elif stage == "totp":
                         if self.totp is None:
                             raise ValueError(
                                 "School login requires USTC_PASSPORT_TOTP_URL"
                             )
-                        await self.page.locator(
-                            "div.ant-tabs-tab:nth-of-type(2)"
+                        await self.page.get_by_role(
+                            "tab", name="动态口令", exact=True
                         ).click()
-                        code = self.page.locator("input.opt_code_input")
+                        code = self.page.locator("input.opt_code_input:visible")
                         await code.wait_for(state="visible")
                         await code.fill(self.totp.now())
-                        await self.page.locator('button[type="submit"]').click()
+                        await self.page.locator('button[type="submit"]:visible').click()
                     previous = stage
         except (TimeoutError, BrowserTimeoutError):
             controls = await self.page.locator("input, [role=tab]").evaluate_all(
@@ -189,6 +187,9 @@ class USTCSession:
                 wait_until="domcontentloaded",
                 timeout=self.timeout_ms,
             )
+            password_tab = self.page.get_by_role("tab", name="账号密码", exact=True)
+            if await password_tab.is_visible():
+                await password_tab.click()
             await self._finish_login("cas-success")
 
         await AsyncRetrying(
