@@ -75,7 +75,7 @@ jobs:
             fi
             gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
               --branch master --limit 50 --json databaseId,conclusion \
-              --jq '[.[] | select(.conclusion == "success")][:7][].databaseId'
+              --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][:7][].databaseId'
           )
           if [ "${#run_ids[@]}" -eq 0 ]; then
             echo "No previous successful build artifact found"
