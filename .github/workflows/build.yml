@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [academic, young, blackboard]
+        platform: [academic, jw, young, blackboard]
     runs-on: ubuntu-latest
     # A cold run includes all school semesters and bounded historical exam requests.
     timeout-minutes: 90
@@ -36,7 +36,6 @@ jobs:
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Resolve pinned patchright version
-        if: matrix.platform != 'blackboard'
         id: patchright
         run: |
           python - <<'PYTHON' >> "$GITHUB_OUTPUT"
@@ -46,7 +45,6 @@ jobs:
           print("version=" + next(p["version"] for p in packages if p["name"] == "patchright"))
           PYTHON
       - name: Cache Playwright browsers
-        if: matrix.platform != 'blackboard'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
@@ -56,7 +54,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           uv sync --frozen --no-dev
-          if [ "$PLATFORM" != "blackboard" ]; then uv run --no-dev patchright install chromium; fi
+          uv run --no-dev patchright install chromium
       - name: Restore previous Pages artifact cache
         env:
           GH_TOKEN: ${{ github.token }}

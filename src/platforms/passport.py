@@ -47,10 +47,17 @@ def _create_request_http_client(
 
 
 class USTCSession:
-    def __init__(self, headless: bool = True, *, after_login_services: bool = True):
+    def __init__(
+        self,
+        headless: bool = True,
+        *,
+        after_login_services: bool = True,
+        catalog_login: bool = True,
+    ):
         load_dotenv()
         self.headless = headless
         self.after_login_services = after_login_services
+        self.catalog_login = catalog_login
         self.timeout_ms = int(os.getenv("USTC_TIMEOUT_MS", "60000"))
         if self.timeout_ms <= 0:
             raise ValueError("USTC_TIMEOUT_MS must be positive")
@@ -177,10 +184,13 @@ class USTCSession:
         )(attempt)
 
     async def _after_login(self):
-        await self.page.goto(
-            CATALOG_SSO_URL, wait_until="domcontentloaded", timeout=self.timeout_ms
-        )
-        await self._finish_login(r"^https://catalog\.ustc\.edu\.cn/(?!ustc_cas_login)")
+        if self.catalog_login:
+            await self.page.goto(
+                CATALOG_SSO_URL, wait_until="domcontentloaded", timeout=self.timeout_ms
+            )
+            await self._finish_login(
+                r"^https://catalog\.ustc\.edu\.cn/(?!ustc_cas_login)"
+            )
         await self.page.goto(
             JW_COURSE_SELECT_URL, wait_until="domcontentloaded", timeout=self.timeout_ms
         )

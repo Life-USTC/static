@@ -72,6 +72,16 @@ Young 每次构建都会完整刷新进行中和已结束活动列表，并在�
 
 `catalog_teach_course_group_members` 支持按课程代码反查目录归属。`catalog_teach_program_courses` 保留每次出现的方案、模块路径、必修属性和建议学期。`catalog_teach_course_substitute_pool_list` 保留整组替代规则及方向。
 
+## JW 补充资料
+
+JW 任务直接读取“全校开课查询”的学期列表，不依赖 catalog 登录或列表请求。
+每页 200 个教学班、最多两页并发，核对分页总数及唯一 ID 后，才提交该学期。
+首次获取全部学期；活跃学期每天更新，已结束学期按 14 天分散复查。
+`jw_catalog_course_infos`、`jw_catalog_lesson_infos` 复用课程/教学班资料的字段格式，
+按课程 ID 去重，只投影产品需要的字段，不保存完整教师或账号对象。
+server 以 catalog 为优先来源，用 JW 补缺；来源之间的身份冲突仍会隔离。
+首次历史回填会比后续日更慢，每个学期独立提交，失败保留该学期旧数据。
+
 ## Blackboard 公开课程资料
 
 抓取范围写在 `blackboard-config.yaml`；每门课程从 `launcher` 页读出课程菜单，再按
@@ -79,8 +89,10 @@ content area 递归 listContent，因此新增课程只需写一个 course id。
 
 会话用的是站点自己的匿名入口
 `GET /webapps/login?action=guest_login&new_loc=%2Fwebapps%2Fblackboard%2Fexecute%2Flauncher%3Ftype%3DCourse%26id%3D<course_id>`，
-全程同一个 HTTP 客户端、跟随跳转、保留 cookie。**不提交用户名和密码**，
-`access_mode` 恒为 `guest_session`。
+全程同一个 HTTP 客户端、跟随跳转、保留 cookie。不向 Blackboard 提交账号密码，
+`access_mode` 恒为 `guest_session`。校外网络网关要求认证时，复用 Patchright/CAS 完成网关认证，然后继续使用 Blackboard 访客入口。
+
+`blackboard_contents` 保存访客可读条目的标题、纯文本说明、类型和来源页面。
 
 `blackboard_resources` 每行记录请求 URL、最终 URL、状态码、MIME、文件名、字节数、
 SHA-256、本地路径、来源页面和分类（`homework` / `lab` / `answer` / `report` /
@@ -102,9 +114,9 @@ User-Agent 标明项目地址，并有每课程页数 / 资源数 / 单文件大
 
 ## 给贡献者
 
-日更 CD 使用 academic、young、blackboard 三个 matrix 任务，各自复用上次完整快照并独立采集。
+日更 CD 使用 academic、jw、young、blackboard 四个 matrix 任务，各自复用上次完整快照并独立采集。
 汇总任务只替换对应平台的数据、重映射抓取记录 ID，统一检查 SQLite、契约与静态资源后才发布。
-`python main.py --platform academic` 可单独运行课程/教务任务；省略该参数仍可本地完整构建。
+`python main.py --platform academic` 可单独运行课程/教务任务，`--platform jw` 独立补充 JW 资料；省略该参数仍可本地完整构建。
 
 日更由 GitHub Actions（`build.yml`）驱动。本地用 `uv run ruff check .`、`uv run ruff format --check .` 和
 `uv run ty check src tools main.py` 检查采集代码；smoke 与纯逻辑测试见 `tests/`；本 README 只描述产物语义。

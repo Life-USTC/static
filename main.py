@@ -24,6 +24,7 @@ from src.platforms.catalog.plans import refresh_study_plans
 from src.platforms.catalog.sections import refresh_catalog_semester_details
 from src.platforms.catalog.semesters import make_curriculum
 from src.platforms.catalog.substitutions import refresh_course_substitutions
+from src.platforms.jw import refresh_jw_profiles
 from src.platforms.passport import USTCSession
 from src.platforms.young import make_young_events
 from src.sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
@@ -117,7 +118,7 @@ async def _main() -> None:
         metavar="ID",
         help="Refresh class profiles for this semester (repeatable)",
     )
-    parser.add_argument("--platform", choices=("academic", "young", "blackboard"))
+    parser.add_argument("--platform", choices=("academic", "jw", "young", "blackboard"))
     args = parser.parse_args()
     if args.platform:
         args.curriculum = args.course_catalog = args.platform == "academic"
@@ -164,7 +165,9 @@ async def _main() -> None:
 
     async def connect():
         if authenticated:
-            return await resources.enter_async_context(USTCSession())
+            return await resources.enter_async_context(
+                USTCSession(catalog_login=args.platform != "jw")
+            )
         client = await resources.enter_async_context(
             httpx.AsyncClient(follow_redirects=True)
         )
@@ -203,6 +206,7 @@ async def _main() -> None:
             )
         )
     for enabled, name, refresh in (
+        (args.platform == "jw" or run_all, "jw_profiles", refresh_jw_profiles),
         (catalog, "course_catalog", refresh_course_catalog),
         (catalog, "course_substitutions", refresh_course_substitutions),
         (

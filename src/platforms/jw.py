@@ -1,8 +1,13 @@
+import json
+import logging
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
 
 import httpx
+from bs4 import BeautifulSoup
 
+from src.batch import fetch_in_batches, refresh_due
 from src.http import RequestSession
 from src.models.api.catalog_api_teach_lesson_list_for_teach import TeachLessonListItem
 from src.models.api.jw_for_std_lesson_search_semester import FieldPage, RoomType
@@ -25,32 +30,73 @@ async def _get_jw_user_id(session: RequestSession) -> str:
 
 async def fetch_jw_courses_json(session: RequestSession, semester_id: str) -> dict:
     user_id = await _get_jw_user_id(session=session)
-    query = (
-        "courseCodeLike=&codeLike=&educationAssoc=&courseNameZhLike=&teacherNameLike=&"
-        "schedulePlace=&classCodeLike=&courseTypeAssoc=&classTypeAssoc=&campusAssoc=&"
-        "teachLangAssoc=&roomTypeAssoc=&examModeAssoc=&requiredPeriodInfo.totalGte=&"
-        "requiredPeriodInfo.totalLte=&requiredPeriodInfo.weeksGte=&requiredPeriodInfo.weeksLte=&"
-        "requiredPeriodInfo.periodsPerWeekGte=&requiredPeriodInfo.periodsPerWeekLte=&"
-        "limitCountGte=&limitCountLte=&majorAssoc=&majorDirectionAssoc=&"
-        "queryPage__=1%2C100000"
-    )
-    url = (
-        "https://jw.ustc.edu.cn/for-std/lesson-search/semester/"
-        + semester_id
-        + "/search/"
-        + user_id
-        + "?"
-        + query
-    )
+    url = f"https://jw.ustc.edu.cn/for-std/lesson-search/semester/{semester_id}/search/{user_id}"
     headers = {
-        "accept": "application/json, text/javascript, */*; q=0.01",
+        "accept": "application/json",
         "x-requested-with": "XMLHttpRequest",
         "referer": f"https://jw.ustc.edu.cn/for-std/lesson-search/index/{user_id}",
     }
 
-    return await session.get_json(
-        url=url, headers=headers, timeout=60_000, transient_retries=0
+    async def fetch(page: int):
+        result = await session.get_json(
+            f"{url}?queryPage__={page}%2C200", headers=headers, timeout=60_000
+        )
+        info = FieldPage.model_validate(result.get("_page_"))
+        rows = result.get("data")
+        if (
+            not isinstance(rows, list)
+            or info.currentPage != page
+            or info.rowsInPage != len(rows)
+            or info.rowsPerPage != 200
+            or info.totalRows is None
+            or info.totalRows < 0
+            or info.totalPages != (info.totalRows + 199) // 200
+        ):
+            raise ValueError("Invalid JW lesson-search pagination")
+        return result
+
+    first = await fetch(1)
+    pages = await fetch_in_batches(
+        fetch, range(2, first["_page_"]["totalPages"] + 1), 2, 0.2
     )
+    rows = [row for page in [first, *pages] for row in page["data"]]
+    total = first["_page_"]["totalRows"]
+    if (
+        any(page["_page_"]["totalRows"] != total for page in pages)
+        or len(rows) != total
+        or len({row["id"] for row in rows}) != total
+    ):
+        raise ValueError("JW lesson-search changed during pagination")
+    # Preserve the complete-result contract used by the dictionary collector.
+    return {
+        "data": rows,
+        "_page_": {
+            "currentPage": 1,
+            "rowsInPage": total,
+            "rowsPerPage": total,
+            "totalRows": total,
+            "totalPages": int(bool(total)),
+        },
+    }
+
+
+async def fetch_jw_semesters(session: RequestSession) -> list[tuple[str, str]]:
+    user_id = await _get_jw_user_id(session)
+    response = await session.get(
+        f"https://jw.ustc.edu.cn/for-std/lesson-search/index/{user_id}"
+    )
+    options = BeautifulSoup(await response.text(), "html.parser").select(
+        "select#semester option"
+    )
+    terms = [
+        (str(option.get("value", "")), option.get_text(strip=True))
+        for option in options
+    ]
+    if not terms or any(not id_.isdecimal() or not name for id_, name in terms):
+        raise ValueError("JW returned no valid semester list")
+    if len({id_ for id_, _ in terms}) != len(terms):
+        raise ValueError("JW returned duplicate semester IDs")
+    return terms
 
 
 async def fetch_jw_schedule_table_json(
@@ -192,3 +238,162 @@ async def ensure_room_types(
             ],
         )
     store.put_metadata({"jw_room_types_status": "complete"})
+
+
+LOGGER = logging.getLogger(__name__)
+COURSES = "jw_catalog_course_infos"
+LESSONS = "jw_catalog_lesson_infos"
+
+
+def _name(value):
+    return (value or {}).get("nameZh") or (value or {}).get("name")
+
+
+def _profile(course, lesson=None):
+    """Use the existing profile vocabulary; never publish teacher/account objects."""
+    source = lesson or course
+    periods = source.get("requiredPeriodInfo") if lesson else course.get("periodInfo")
+    profile = {
+        "id": source["id"],
+        "code": source["code"],
+        "name": {"cn": course.get("nameZh"), "en": course.get("nameEn")},
+        "desc": {"cn": course.get("introduction"), "en": course.get("introductionEn")},
+        "credit": source.get("credits"),
+        "hour": (periods or {}).get("total"),
+        "dept": _name(
+            source.get("openDepartment") if lesson else course.get("defaultOpenDepart")
+        ),
+        "courseType": _name(source.get("courseType")),
+        "courseCategory": _name(source.get("courseCategory")),
+        "courseClassify": _name(source.get("courseClassify")),
+        "discipline": _name(course.get("disciplineType")),
+        "grading": _name(course.get("scoreMarkStyle")),
+        "examType": _name(
+            source.get("examMode") if lesson else course.get("defaultExamMode")
+        ),
+        "lang": _name(source.get("teachLang")),
+        "textbook": lesson.get("textbook")
+        if lesson
+        else course.get("designateTextbook"),
+        "ref": course.get("referenceTextbook"),
+        "sem": ";".join(
+            {"SPRING": "春", "SUMMER": "夏", "AUTUMN": "秋", "WINTER": "冬"}.get(
+                value, value
+            )
+            for value in course.get("seasons") or []
+        ),
+        "preq": lesson.get("preCourseText")
+        if lesson
+        else ";".join(
+            item.get("nameZh") or item.get("code") or ""
+            for item in course.get("defaultPreCourses") or []
+        ),
+        "valid": course.get("enabled", True),
+        "syllabus": None,
+        "textbooks": None,
+        "lastTerm": _name(course.get("lastExecuteSemester")),
+    }
+    if lesson:
+        profile["courseId"] = course["id"]
+    return profile
+
+
+def _write_profiles(store, table, rows, fetch_id, semester_id):
+    store.conn.executemany(
+        f"INSERT INTO {table}(id,code,payload_json,semester_id,fetch_id,courseId) "
+        "VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET code=excluded.code, "
+        "payload_json=excluded.payload_json, "
+        "semester_id=excluded.semester_id, fetch_id=excluded.fetch_id, "
+        "courseId=excluded.courseId",
+        [
+            (
+                row["id"],
+                row["code"],
+                json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+                semester_id,
+                fetch_id,
+                row.get("courseId"),
+            )
+            for row in rows
+        ],
+    )
+
+
+async def refresh_jw_profiles(session: RequestSession, store: SQLiteModelStore):
+    now = datetime.now(UTC)
+    terms = await fetch_jw_semesters(session)
+    for table in (COURSES, LESSONS):
+        store.conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {table}(id INTEGER PRIMARY KEY, "
+            "code TEXT NOT NULL, courseId INTEGER, "
+            "payload_json TEXT NOT NULL, semester_id TEXT NOT NULL, "
+            "fetch_id INTEGER NOT NULL REFERENCES upstream_fetches(id) "
+            "ON DELETE CASCADE)"
+        )
+    # Oldest first: shared course defaults are taken from the latest offering.
+    for semester_id, name in reversed(terms):
+        key = f"jw_catalog_semester_{semester_id}"
+        saved = store.conn.execute(
+            "SELECT value FROM metadata WHERE key=?", (key,)
+        ).fetchone()
+        previous = json.loads(saved[0]) if saved else {}
+        timestamp = previous.get("fetched_at")
+        if timestamp and (
+            timestamp[:10] == now.date().isoformat()
+            or previous.get("ended")
+            and not refresh_due(key, timestamp, now)
+        ):
+            continue
+        payload = await fetch_jw_courses_json(session, semester_id)
+        rows = payload["data"]
+        courses = {}
+        lessons = []
+        for row in rows:
+            course = row["course"]
+            for item in (row, course):
+                if (
+                    type(item.get("id")) is not int
+                    or item["id"] <= 0
+                    or not isinstance(item.get("code"), str)
+                    or not item["code"].strip()
+                ):
+                    raise ValueError("JW returned an invalid lesson/course identity")
+            if row.get("semester", {}).get("id") != int(semester_id):
+                raise ValueError("JW lesson belongs to a different semester")
+            courses[course["id"]] = _profile(course)
+            lessons.append(_profile(course, row))
+        end = (rows[0].get("semester") or {}).get("endDate") if rows else None
+        ended = end < now.date().isoformat() if end else int(name[:4]) < now.year
+        with store.conn:
+            # A failed page leaves this semester's previous snapshot untouched.
+            ids = [
+                r[0]
+                for r in store.conn.execute(
+                    "SELECT id FROM upstream_fetches WHERE source=? AND context=?",
+                    (LESSONS, f"semester_id={semester_id}"),
+                )
+            ]
+            store.delete_fetches(ids)
+            fetch_id = store.record_fetch(
+                source=LESSONS,
+                method="GET",
+                url=f"https://jw.ustc.edu.cn/for-std/lesson-search/semester/{semester_id}",
+                context={"semester_id": semester_id},
+            )
+            _write_profiles(store, COURSES, courses.values(), fetch_id, semester_id)
+            _write_profiles(store, LESSONS, lessons, fetch_id, semester_id)
+            store.put_metadata(
+                {
+                    key: json.dumps(
+                        {"fetched_at": now.isoformat(), "ended": ended, "name": name}
+                    )
+                }
+            )
+        LOGGER.info("JW %s: %s lessons, %s courses", name, len(rows), len(courses))
+    store.put_metadata(
+        {
+            "jw_catalog_updated_at": now.isoformat(),
+            "jw_catalog_semester_count": len(terms),
+        }
+    )

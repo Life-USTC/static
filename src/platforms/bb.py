@@ -1,13 +1,8 @@
-"""Blackboard anonymous guest-session crawler.
+"""Crawl Blackboard guest material, authenticating only the network gateway.
 
-The USTC Blackboard instance exposes a subset of its courses to an anonymous
-`guest_login` session. This builder walks those courses, records every page and
-downloadable resource it is served, and keeps the noise (the login shell,
-duplicate pages and contentless navigation pages) out of the content index.
-
-Boundary: the crawler never submits a username or a password and never tries to
-work around an access control. Anything answered with 401/403, or answered with
-the login shell, is recorded as `auth_required` and skipped.
+The university's off-campus access gate may require CAS before the anonymous
+Blackboard guest entry can be reached. No personal Blackboard course session is
+used. Login shells and denied resources are retained as access diagnostics.
 """
 
 from __future__ import annotations
@@ -16,10 +11,12 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
 from collections.abc import Mapping
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,9 +44,11 @@ from src.models.blackboard import (
     PAGE_KIND_CONTENT,
     PAGE_KIND_LOGIN,
     PAGE_KIND_NOT_FOUND,
+    BlackboardContent,
     BlackboardPage,
     BlackboardResource,
 )
+from src.platforms.passport import USTCSession
 from src.sqlite_store import SNAPSHOT_FILENAME, SQLiteModelStore
 from src.utils.blackboard_html import (
     classify_page,
@@ -72,6 +71,7 @@ BLACKBOARD_DOWNLOAD_DIR = BASE_DIR / ".artifacts" / "blackboard"
 
 PAGES_SOURCE = "blackboard_pages"
 RESOURCES_SOURCE = "blackboard_resources"
+CONTENTS_SOURCE = "blackboard_contents"
 
 # Identifies the project rather than pretending to be a browser: the university
 # runs this server and should be able to see who is asking.
@@ -133,6 +133,7 @@ class FetchedResource:
 @dataclass
 class CrawlResult:
     pages: list[BlackboardPage] = field(default_factory=list)
+    contents: list[BlackboardContent] = field(default_factory=list)
     resources: list[BlackboardResource] = field(default_factory=list)
 
 
@@ -440,6 +441,8 @@ async def crawl_course(
     entry_kind = classify_page(
         status=entry.status, final_url=entry.final_url, html=entry.text, item_count=0
     )
+    if entry_kind == "error":
+        raise RuntimeError(f"Blackboard course entry failed: HTTP {entry.status}")
     if entry_kind in {PAGE_KIND_LOGIN, PAGE_KIND_NOT_FOUND}:
         # The guest session is not allowed into this course. Record the refusal
         # and move on; never retry it with credentials.
@@ -467,6 +470,21 @@ async def crawl_course(
             (area.content_id, area.title, 1)
             for area in parse_course_menu(entry.text, course_id=course.id)
         ]
+
+    if not queue:
+        result.pages.append(
+            BlackboardPage(
+                course_id=course.id,
+                course_title=course_title,
+                requested_url=entry.requested_url,
+                final_url=entry.final_url,
+                status=entry.status,
+                page_kind=entry_kind,
+                access_state=_page_access_state(entry_kind),
+                exclusion_reason="no_content_menu",
+                fetched_at=_now(),
+            )
+        )
 
     visited: set[str] = set()
     body_hashes: dict[str, str] = {}
@@ -529,6 +547,17 @@ async def crawl_course(
             continue
 
         for item in items:
+            result.contents.append(
+                BlackboardContent(
+                    course_id=course.id,
+                    content_id=content_id,
+                    item_id=item.item_id,
+                    title=item.title,
+                    description=item.description,
+                    kind=item.kind,
+                    source_page=page.final_url,
+                )
+            )
             if item.folder_content_id and item.folder_content_id not in visited:
                 queue.append((item.folder_content_id, item.title, depth + 1))
             for link in item.resources:
@@ -661,7 +690,12 @@ def _store_results(
         table_name=RESOURCES_SOURCE, response_model=BlackboardResource
     )
 
+    store.register_response_model(
+        table_name=CONTENTS_SOURCE, response_model=BlackboardContent
+    )
+
     counts = {
+        "contents": 0,
         "pages": 0,
         "indexed_pages": 0,
         "resources": 0,
@@ -681,6 +715,18 @@ def _store_results(
             )
             counts["pages"] += 1
             counts["indexed_pages"] += int(page.indexed)
+
+        contents_fetch_id = store.record_fetch(
+            source=CONTENTS_SOURCE,
+            method="GET",
+            url=launcher_url(config.base_url, course_id),
+            context={"course_id": course_id, "access_mode": ACCESS_MODE_GUEST},
+        )
+        for content in result.contents:
+            store.store_response(
+                table_name=CONTENTS_SOURCE, response=content, fetch_id=contents_fetch_id
+            )
+            counts["contents"] += 1
 
         resources_fetch_id = store.record_fetch(
             source=RESOURCES_SOURCE,
@@ -726,9 +772,30 @@ async def make_blackboard(
         try:
             previous_resources = load_previous_resources(store)
             results: dict[str, CrawlResult] = {}
-            async with GuestSession(
-                config, client=client, download_dir=download_dir
-            ) as session:
+            async with AsyncExitStack() as resources:
+                session = await resources.enter_async_context(
+                    GuestSession(config, client=client, download_dir=download_dir)
+                )
+                entry = await session.fetch_page(config.base_url)
+                if "/nginx_auth" in entry.final_url:
+                    # University network authentication is separate from Blackboard:
+                    # retain a guest session after passing the external-access gate.
+                    school = await resources.enter_async_context(
+                        USTCSession(after_login_services=False)
+                    )
+                    page = school.page
+                    assert page is not None
+                    await page.goto(entry.final_url, wait_until="domcontentloaded")
+                    await page.get_by_role("link", name="登录", exact=True).click()
+                    await page.wait_for_url(
+                        re.compile(r"^https://www\.bb\.ustc\.edu\.cn/(?!nginx_auth)"),
+                        wait_until="domcontentloaded",
+                    )
+                    await school.sync_cookies_from_page()
+                    if session._owns_client:
+                        await session.client.aclose()
+                    session.client = school.client
+                    session._owns_client = False
                 for course in config.courses:
                     logger.info("Crawling Blackboard course %s", course.id)
                     results[course.id] = await crawl_course(
@@ -740,6 +807,7 @@ async def make_blackboard(
 
             _delete_source(store, PAGES_SOURCE)
             _delete_source(store, RESOURCES_SOURCE)
+            _delete_source(store, CONTENTS_SOURCE)
             counts = _store_results(store, config=config, results=results)
             store.put_metadata(
                 {
@@ -747,6 +815,7 @@ async def make_blackboard(
                     "blackboard_synced_at": _now(),
                     "blackboard_course_count": len(config.courses),
                     "blackboard_request_count": request_count,
+                    "blackboard_content_count": counts["contents"],
                     "blackboard_page_count": counts["pages"],
                     "blackboard_indexed_page_count": counts["indexed_pages"],
                     "blackboard_resource_count": counts["resources"],

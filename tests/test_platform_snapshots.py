@@ -17,7 +17,7 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
                 build = root / platform
                 build.mkdir()
                 store = SQLiteModelStore(build / SNAPSHOT_FILENAME)
-                for prefix in ("catalog", "young", "blackboard"):
+                for prefix in ("catalog", "jw_catalog", "young", "blackboard"):
                     source = prefix + "_rows"
                     store.conn.execute(
                         f"CREATE TABLE {source} (id INTEGER PRIMARY KEY, "
@@ -29,7 +29,10 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
                     )
                     value = (
                         platform
-                        if prefix == {"academic": "catalog"}.get(platform, platform)
+                        if prefix
+                        == {"academic": "catalog", "jw": "jw_catalog"}.get(
+                            platform, platform
+                        )
                         else "stale"
                     )
                     store.conn.execute(
@@ -44,6 +47,7 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
             with closing(sqlite3.connect(root / "merged" / SNAPSHOT_FILENAME)) as db:
                 for prefix, expected in (
                     ("catalog", "academic"),
+                    ("jw_catalog", "jw"),
                     ("young", "young"),
                     ("blackboard", "blackboard"),
                 ):
@@ -56,7 +60,7 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
                     )
                 self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(
-                    db.execute("SELECT COUNT(*) FROM upstream_fetches").fetchone(), (3,)
+                    db.execute("SELECT COUNT(*) FROM upstream_fetches").fetchone(), (4,)
                 )
             self.assertEqual(
                 set(
