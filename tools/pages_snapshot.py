@@ -23,7 +23,13 @@ DIAGNOSTICS = (".*", "*.observed.schema.json", "contract-report.json")
 
 
 def compact(db: sqlite3.Connection) -> None:
-    db.create_function("catalog", 1, lambda name: bool(name and CATALOG.match(name)))
+    db.create_function(
+        "catalog",
+        1,
+        lambda name: bool(
+            name and (name.startswith("jw_catalog_") or CATALOG.match(name))
+        ),
+    )
     tables = db.execute(
         "SELECT name FROM sqlite_schema WHERE type='table' AND catalog(name)"
     ).fetchall()

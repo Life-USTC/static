@@ -71,7 +71,7 @@ jobs:
             if [ "$GITHUB_REF_NAME" != master ] && [ "$PLATFORM" != academic ]; then
               gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
                 --branch "$GITHUB_REF_NAME" --limit 20 --json databaseId,conclusion \
-                --jq '[.[] | select(.conclusion == "success")][:3][].databaseId'
+                --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][:3][].databaseId'
             fi
             gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
               --branch master --limit 50 --json databaseId,conclusion \
@@ -88,7 +88,8 @@ jobs:
             if [ "$PLATFORM" != academic ] &&
               gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
                 --name "static-$PLATFORM" --dir "$platform_cache" &&
-              test -s "$platform_cache/life-ustc-static.sqlite"; then
+              test -s "$platform_cache/life-ustc-static.sqlite" &&
+              python -c 'import json,sys; rows=list(json.load(open(sys.argv[1]))["builders"].values()); sys.exit(not rows or any(r["status"] != "ok" for r in rows))' "$platform_cache/build-status.json"; then
               cp "$platform_cache/life-ustc-static.sqlite" build/
               echo "Restored $PLATFORM cache from $run_id"
               exit 0

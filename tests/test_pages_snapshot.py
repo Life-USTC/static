@@ -20,14 +20,16 @@ class PagesSnapshotTest(unittest.TestCase):
             db.executescript("""
                 CREATE TABLE upstream_fetches(id INTEGER PRIMARY KEY, source TEXT);
                 INSERT INTO upstream_fetches VALUES
-                    (1,'jw'),(2,'catalog_teach_course_infos');
+                    (1,'jw'),(2,'catalog_teach_course_infos'),(3,'jw_catalog_lesson_infos');
                 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT);
                 INSERT INTO metadata VALUES
-                    ('legacy','kept'),('catalog_semester_details_461','{}');
+                    ('legacy','kept'),('catalog_semester_details_461','{}'),('jw_catalog_semester_461','{}');
                 CREATE TABLE jw_lessons(
                     fetch_id INTEGER REFERENCES upstream_fetches(id));
                 INSERT INTO jw_lessons VALUES(1);
                 CREATE TABLE catalog_teach_course_infos_desc(fetch_id INTEGER);
+                CREATE TABLE jw_catalog_lesson_infos(fetch_id INTEGER);
+                INSERT INTO jw_catalog_lesson_infos VALUES(3);
             """)
         original = raw.read_bytes()
         (build / "contract-report.json").touch()
@@ -49,6 +51,8 @@ class PagesSnapshotTest(unittest.TestCase):
                 self.assertEqual(db.execute(query).fetchall(), expected, query)
             with self.assertRaises(sqlite3.OperationalError):
                 db.execute("SELECT * FROM catalog_teach_course_infos_desc")
+            with self.assertRaises(sqlite3.OperationalError):
+                db.execute("SELECT * FROM jw_catalog_lesson_infos")
         for source, target in ((pages, restored), (build, legacy)):
             stage(source, target, publish=False)
             self.assertEqual((target / SNAPSHOT_FILENAME).read_bytes(), original)
