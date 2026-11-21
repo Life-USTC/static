@@ -86,8 +86,8 @@ class JwProfileSmokeTest(unittest.IsolatedAsyncioTestCase):
                 "DELETE FROM metadata WHERE key='jw_catalog_semester_461'"
             )
             store.conn.commit()
-            fetch.side_effect = RuntimeError("request failed")
-            with self.assertRaisesRegex(RuntimeError, "request failed"):
+            fetch.side_effect = ValueError("invalid response")
+            with self.assertRaisesRegex(RuntimeError, "semesters: 461"):
                 await refresh_jw_profiles(AsyncMock(), store)
             self.assertEqual(
                 store.conn.execute(f"SELECT COUNT(*) FROM {LESSONS}").fetchone()[0], 1

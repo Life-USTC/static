@@ -362,6 +362,7 @@ async def refresh_jw_profiles(session: RequestSession, store: SQLiteModelStore):
             "fetch_id INTEGER NOT NULL REFERENCES upstream_fetches(id) "
             "ON DELETE CASCADE)"
         )
+    failures = []
     # Oldest first: shared course defaults are taken from the latest offering.
     for semester_id, name in reversed(terms):
         key = f"jw_catalog_semester_{semester_id}"
@@ -376,26 +377,35 @@ async def refresh_jw_profiles(session: RequestSession, store: SQLiteModelStore):
             and not refresh_due(key, timestamp, now)
         ):
             continue
-        payload = await fetch_jw_courses_json(session, semester_id)
-        rows = payload["data"]
-        courses = {}
-        lessons = []
-        for row in rows:
-            course = row["course"]
-            for item in (row, course):
-                if (
-                    type(item.get("id")) is not int
-                    or item["id"] <= 0
-                    or not isinstance(item.get("code"), str)
-                    or not item["code"].strip()
-                ):
-                    raise ValueError("JW returned an invalid lesson/course identity")
-            if row.get("semester", {}).get("id") != int(semester_id):
-                raise ValueError("JW lesson belongs to a different semester")
-            courses[course["id"]] = _profile(course)
-            lessons.append(_profile(course, row))
-        end = (rows[0].get("semester") or {}).get("endDate") if rows else None
-        ended = end < now.date().isoformat() if end else int(name[:4]) < now.year
+        try:
+            payload = await fetch_jw_courses_json(session, semester_id)
+            rows = payload["data"]
+            courses = {}
+            lessons = []
+            for row in rows:
+                course = row["course"]
+                for item in (row, course):
+                    if (
+                        type(item.get("id")) is not int
+                        or item["id"] <= 0
+                        or not isinstance(item.get("code"), str)
+                        or not item["code"].strip()
+                    ):
+                        raise ValueError(
+                            "JW returned an invalid lesson/course identity"
+                        )
+                if row.get("semester", {}).get("id") != int(semester_id):
+                    raise ValueError("JW lesson belongs to a different semester")
+                courses[course["id"]] = _profile(course)
+                lessons.append(_profile(course, row))
+            end = (rows[0].get("semester") or {}).get("endDate") if rows else None
+            ended = end < now.date().isoformat() if end else int(name[:4]) < now.year
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
+            failures.append(semester_id)
+            LOGGER.warning(
+                "JW %s retained previous data: %s", name, type(error).__name__
+            )
+            continue
         with store.conn:
             # A failed page leaves this semester's previous snapshot untouched.
             ids = [
@@ -422,9 +432,15 @@ async def refresh_jw_profiles(session: RequestSession, store: SQLiteModelStore):
                 }
             )
         LOGGER.info("JW %s: %s lessons, %s courses", name, len(rows), len(courses))
-    store.put_metadata(
-        {
-            "jw_catalog_updated_at": now.isoformat(),
-            "jw_catalog_semester_count": len(terms),
-        }
-    )
+    with store.conn:
+        store.put_metadata(
+            {
+                "jw_catalog_updated_at": now.isoformat(),
+                "jw_catalog_semester_count": len(terms),
+                "jw_catalog_failed_semesters": ",".join(failures),
+            }
+        )
+    if failures:
+        raise RuntimeError(
+            f"JW profile refresh failed for semesters: {', '.join(failures)}"
+        )
