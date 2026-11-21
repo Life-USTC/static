@@ -7,6 +7,12 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "Collector to rehearse (single collectors do not publish)"
+        type: choice
+        default: all
+        options: [all, academic, jw, young, blackboard]
   repository_dispatch:
     types: [retry_job]
 
@@ -24,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [academic, jw, young, blackboard]
+        platform: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["academic","jw","young","blackboard"]') }}
     runs-on: ubuntu-latest
     # A cold run includes all school semesters and bounded historical exam requests.
     timeout-minutes: 90
@@ -113,6 +119,7 @@ jobs:
           retention-days: 7
 
   assemble:
+    if: ${{ !inputs.platform || inputs.platform == 'all' }}
     needs: update
     runs-on: ubuntu-latest
     timeout-minutes: 30

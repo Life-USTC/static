@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from contextlib import AsyncExitStack
+from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
@@ -135,33 +136,50 @@ class USTCSession:
     async def _finish_login(self, target: str):
         previous = ""
         seen = set()
-        async with asyncio.timeout(self.timeout_ms / 1000):
-            while True:
-                stage = await self._next_form(target, previous)
-                if stage == "done":
-                    return
-                if stage in seen:
-                    raise ValueError(
-                        "School login returned to an already submitted form"
-                    )
-                seen.add(stage)
-                if stage == "credentials":
-                    await self.page.locator(
-                        'input[name="username"]:not([type="hidden"])'
-                    ).fill(self.username)
-                    await self.page.locator(
-                        'input[type="password"]:not([type="hidden"])'
-                    ).fill(self.password)
-                    await self.page.locator("button#submitBtn").click()
-                elif stage == "totp":
-                    if self.totp is None:
-                        raise ValueError("School login requires USTC_PASSPORT_TOTP_URL")
-                    await self.page.locator("div.ant-tabs-tab:nth-of-type(2)").click()
-                    code = self.page.locator("input.opt_code_input")
-                    await code.wait_for(state="visible")
-                    await code.fill(self.totp.now())
-                    await self.page.locator('button[type="submit"]').click()
-                previous = stage
+        try:
+            async with asyncio.timeout(self.timeout_ms / 1000):
+                while True:
+                    stage = await self._next_form(target, previous)
+                    if stage == "done":
+                        return
+                    if stage in seen:
+                        raise ValueError(
+                            "School login returned to an already submitted form"
+                        )
+                    seen.add(stage)
+                    self.logger.info("School authentication: %s", stage)
+                    if stage == "credentials":
+                        await self.page.locator(
+                            'input[name="username"]:not([type="hidden"])'
+                        ).fill(self.username)
+                        await self.page.locator(
+                            'input[type="password"]:not([type="hidden"])'
+                        ).fill(self.password)
+                        await self.page.locator("button#submitBtn").click()
+                    elif stage == "totp":
+                        if self.totp is None:
+                            raise ValueError(
+                                "School login requires USTC_PASSPORT_TOTP_URL"
+                            )
+                        await self.page.locator(
+                            "div.ant-tabs-tab:nth-of-type(2)"
+                        ).click()
+                        code = self.page.locator("input.opt_code_input")
+                        await code.wait_for(state="visible")
+                        await code.fill(self.totp.now())
+                        await self.page.locator('button[type="submit"]').click()
+                    previous = stage
+        except (TimeoutError, BrowserTimeoutError):
+            controls = await self.page.locator("input, [role=tab]").evaluate_all(
+                "nodes => nodes.filter(n => n.getClientRects().length).map(n => "
+                "n.tagName === 'INPUT' ? n.type + ':' + n.name : n.textContent.trim())"
+            )
+            self.logger.warning(
+                "School login stalled on %s; visible controls: %s",
+                urlsplit(self.page.url).hostname,
+                controls,
+            )
+            raise
 
     async def _login(self):
         async def attempt():
