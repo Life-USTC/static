@@ -17,7 +17,11 @@ def owner(name: str) -> str:
     if name.startswith("jw_catalog_"):
         return "jw"
     return next(
-        (platform for platform in PLATFORMS[1:] if name.startswith(platform + "_")),
+        (
+            platform
+            for platform in ("young", "blackboard")
+            if name.startswith(platform + "_")
+        ),
         "academic",
     )
 

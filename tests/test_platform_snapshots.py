@@ -17,7 +17,13 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
                 build = root / platform
                 build.mkdir()
                 store = SQLiteModelStore(build / SNAPSHOT_FILENAME)
-                for prefix in ("catalog", "jw_catalog", "young", "blackboard"):
+                for prefix in (
+                    "catalog",
+                    "jw_ws_schedule",
+                    "jw_catalog",
+                    "young",
+                    "blackboard",
+                ):
                     source = prefix + "_rows"
                     store.conn.execute(
                         f"CREATE TABLE {source} (id INTEGER PRIMARY KEY, "
@@ -27,14 +33,12 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
                     receipt = store.record_fetch(
                         source=source, method="GET", url="https://example.test"
                     )
-                    value = (
-                        platform
-                        if prefix
-                        == {"academic": "catalog", "jw": "jw_catalog"}.get(
-                            platform, platform
-                        )
-                        else "stale"
-                    )
+                    owner = {
+                        "catalog": "academic",
+                        "jw_ws_schedule": "academic",
+                        "jw_catalog": "jw",
+                    }.get(prefix, prefix)
+                    value = platform if platform == owner else "stale"
                     store.conn.execute(
                         f"INSERT INTO {source} VALUES (1, ?, ?)", (receipt, value)
                     )
@@ -47,6 +51,7 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
             with closing(sqlite3.connect(root / "merged" / SNAPSHOT_FILENAME)) as db:
                 for prefix, expected in (
                     ("catalog", "academic"),
+                    ("jw_ws_schedule", "academic"),
                     ("jw_catalog", "jw"),
                     ("young", "young"),
                     ("blackboard", "blackboard"),
@@ -60,7 +65,7 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
                     )
                 self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(
-                    db.execute("SELECT COUNT(*) FROM upstream_fetches").fetchone(), (4,)
+                    db.execute("SELECT COUNT(*) FROM upstream_fetches").fetchone(), (5,)
                 )
             self.assertEqual(
                 set(
