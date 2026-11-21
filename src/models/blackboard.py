@@ -81,3 +81,13 @@ class BlackboardResource(BaseModel):
     not_modified: bool = False
     source_page: str
     fetched_at: str
+
+
+class BlackboardContent(BaseModel):
+    course_id: str
+    content_id: str
+    item_id: str | None
+    title: str
+    description: str
+    kind: str
+    source_page: str

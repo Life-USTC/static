@@ -23,7 +23,13 @@ DIAGNOSTICS = (".*", "*.observed.schema.json", "contract-report.json")
 
 
 def compact(db: sqlite3.Connection) -> None:
-    db.create_function("catalog", 1, lambda name: bool(name and CATALOG.match(name)))
+    db.create_function(
+        "catalog",
+        1,
+        lambda name: bool(
+            name and (name.startswith("jw_catalog_") or CATALOG.match(name))
+        ),
+    )
     tables = db.execute(
         "SELECT name FROM sqlite_schema WHERE type='table' AND catalog(name)"
     ).fetchall()
@@ -74,7 +80,12 @@ def stage(source: Path, target: Path, *, publish: bool) -> None:
         raise ValueError("Source and destination must be separate directories")
     with TemporaryDirectory(dir=target.parent) as scratch:
         staged = Path(scratch) / "artifact"
-        ignore = [SNAPSHOT_FILENAME, FULL_SNAPSHOT_FILENAME, SNAPSHOT_FILENAME + "-*"]
+        ignore = [
+            "rss",
+            SNAPSHOT_FILENAME,
+            FULL_SNAPSHOT_FILENAME,
+            SNAPSHOT_FILENAME + "-*",
+        ]
         if publish:
             ignore.extend(DIAGNOSTICS)
         shutil.copytree(source, staged, ignore=shutil.ignore_patterns(*ignore))

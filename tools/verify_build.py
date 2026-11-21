@@ -28,7 +28,7 @@ CATALOG_OUTPUTS = {
         "program_courses",
     ),
 }
-BUILDER_NAMES = ("curriculum", *CATALOG_OUTPUTS, "young", "rss", "blackboard")
+BUILDER_NAMES = ("curriculum", *CATALOG_OUTPUTS, "young", "blackboard")
 
 
 class BuildVerificationError(RuntimeError):
@@ -107,7 +107,7 @@ def _verify_builder_outputs(
 ) -> None:
     successful = {name for name, result in builders.items() if result["status"] == "ok"}
     snapshot = (build_dir / "life-ustc-static.sqlite").resolve()
-    if successful - {"rss"} and not snapshot.is_file():
+    if successful and not snapshot.is_file():
         raise BuildVerificationError(f"Missing SQLite output: {snapshot}")
     if (
         "curriculum" in successful
@@ -128,10 +128,6 @@ def _verify_builder_outputs(
             _verify_section_counts(db)
     except (sqlite3.Error, ValueError, TypeError, KeyError) as error:
         raise BuildVerificationError(f"Unreadable school catalog: {error}") from error
-    if "rss" in successful:
-        feeds = list((build_dir / "rss").glob("*.xml"))
-        if not feeds or any(feed.stat().st_size == 0 for feed in feeds):
-            raise BuildVerificationError("RSS builder reported success without feeds")
 
 
 def _verify_section_counts(db: sqlite3.Connection) -> None:

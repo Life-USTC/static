@@ -13,7 +13,6 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 | `life-ustc-static.sqlite` | 兼容下载，包含规范化后的上游响应（课程 / 课表 / Blackboard 公开课程资料索引等） |
 | `life-ustc-static-guesses.sqlite` | 无法直接从上游键出的推断关系 |
 | `schemas/upstream/*.expected.schema.json` | 从 Pydantic 生成的上游契约 |
-| `rss/` | 清洗后的校内新闻等 XML 订阅 |
 | `bus_data*.json` / `geo_data.json` / `building_img_rules.json` / `feed_source.json` / `imgs/` | 校车、地理、建筑图规则、订阅源元数据与图片 |
 | `room_maps.json` / `imgs/rooms/` | 由 `room_map_annotations.json` 生成的、按房间高亮的楼层图 |
 
@@ -23,6 +22,13 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 
 更新源图时需同步检查房间编号、边界坐标和图片尺寸。`uv run python -m unittest discover -s tests -q` 检查规则与标注的楼层对应、生成图片和 5201 的高亮位置。
 
+## 代码职责
+
+- `src/platforms/`：按学校平台组织；`catalog/` 按课程、学期和培养方案细分，`jw.py`、`passport.py`、`young.py`、`bb.py` 对应各站点。
+- `src/http.py`、`src/batch.py`：共用 HTTP 请求、重试、有界并发和刷新周期。
+- `src/sqlite_store.py`、`src/guesses.py`：快照存储及推断关系。
+- `tools/`：构建检查、契约导出和 Pages 发布；不负责学校登录。
+
 ## 数据从哪来
 
 构建器（`main.py`）按需运行：
@@ -30,9 +36,10 @@ GitHub Pages，由 server 的静态加载流程导入数据库。
 - **curriculum** — `catalog.ustc.edu.cn` 与教务课表相关上游 → SQLite
 - **公开课程目录** — 课程与教学班详情、课程替代、目录分组、执行计划及公共模块 → SQLite
 - **young** — `young.ustc.edu.cn` 智慧团学活动 → 写入同一快照库
-- **rss** — 校主页新闻、教务处、应用通知等源 → XML；另含体教中心等爬取源
 - **blackboard** — `www.bb.ustc.edu.cn` 匿名访客会话可见的课程作业 / 实验 / 参考资料
   → 写入同一快照库的 `blackboard_pages` 与 `blackboard_resources`
+
+新闻与 RSS 抓取由独立的 [crawler](https://github.com/Life-USTC/crawler) 仓库维护；本仓库不再生成 RSS。
 
 Young 每次构建都会完整刷新进行中和已结束活动列表，并在分页不完整或上游请求失败时保留上一份可用快照。
 
@@ -65,6 +72,16 @@ Young 每次构建都会完整刷新进行中和已结束活动列表，并在�
 
 `catalog_teach_course_group_members` 支持按课程代码反查目录归属。`catalog_teach_program_courses` 保留每次出现的方案、模块路径、必修属性和建议学期。`catalog_teach_course_substitute_pool_list` 保留整组替代规则及方向。
 
+## JW 补充资料
+
+JW 任务直接读取“全校开课查询”的学期列表，不依赖 catalog 登录或列表请求。
+每页 200 个教学班、最多两页并发，核对分页总数及唯一 ID 后，才提交该学期。
+首次获取全部学期；活跃学期每天更新，已结束学期按 14 天分散复查。
+`jw_catalog_course_infos`、`jw_catalog_lesson_infos` 复用课程/教学班资料的字段格式，
+按课程 ID 去重；`jw` 子对象保留学时分项、先修关系、评分规则、授课周次、选课条件和学期日历附件等补充字段，不保存完整教师或账号对象。
+server 以 catalog 为优先来源，用 JW 补缺；来源之间的身份冲突仍会隔离。
+首次历史回填会比后续日更慢，每个学期独立提交，失败保留该学期旧数据。
+
 ## Blackboard 公开课程资料
 
 抓取范围写在 `blackboard-config.yaml`；每门课程从 `launcher` 页读出课程菜单，再按
@@ -72,8 +89,10 @@ content area 递归 listContent，因此新增课程只需写一个 course id。
 
 会话用的是站点自己的匿名入口
 `GET /webapps/login?action=guest_login&new_loc=%2Fwebapps%2Fblackboard%2Fexecute%2Flauncher%3Ftype%3DCourse%26id%3D<course_id>`，
-全程同一个 HTTP 客户端、跟随跳转、保留 cookie。**不提交用户名和密码**，
-`access_mode` 恒为 `guest_session`。
+全程同一个 HTTP 客户端、跟随跳转、保留 cookie。不向 Blackboard 提交账号密码，
+`access_mode` 恒为 `guest_session`。校外网络网关要求认证时，复用 Patchright/CAS 完成网关认证，然后继续使用 Blackboard 访客入口。
+
+`blackboard_contents` 保存访客可读条目的标题、纯文本说明、类型和来源页面。
 
 `blackboard_resources` 每行记录请求 URL、最终 URL、状态码、MIME、文件名、字节数、
 SHA-256、本地路径、来源页面和分类（`homework` / `lab` / `answer` / `report` /
@@ -95,8 +114,12 @@ User-Agent 标明项目地址，并有每课程页数 / 资源数 / 单文件大
 
 ## 给贡献者
 
-日更由 GitHub Actions（`build.yml`）驱动。本地与测试约定见仓库内 `tests/` 与
-`pyproject.toml`；本 README 只描述产物语义。
+日更 CD 使用 academic、jw、young、blackboard 四个 matrix 任务，各自复用上次完整快照并独立采集。
+汇总任务只替换对应平台的数据、重映射抓取记录 ID，统一检查 SQLite、契约与静态资源后才发布。
+`python main.py --platform academic` 可单独运行课程/教务任务，`--platform jw` 独立补充 JW 资料；省略该参数仍可本地完整构建。
+
+日更由 GitHub Actions（`build.yml`）驱动。本地用 `uv run ruff check .`、`uv run ruff format --check .` 和
+`uv run ty check src tools main.py` 检查采集代码；smoke 与纯逻辑测试见 `tests/`；本 README 只描述产物语义。
 
 课程采集覆盖学校学期列表中的全部学期，不按年份截断课程或考试。已结束学期的
 课程与课表、考试分别缓存，只有对应来源完整、每份响应未满 30 天时才复用；未结束
@@ -136,6 +159,16 @@ JSON，并在替换 SQLite 和 expected schema 前完成契约检查。Observed 
 coverage 或至少两个独立 fetch 的多余 optional 才会失败；incremental 单 context 仅提示。
 单次抓取也不足以证明长期 nullability；未出现的 nullable / union 分支、始终为 null 的值
 和空数组元素类型会明确写入 report 作为 warning，并保留计数供后续人工判断。
+
+课程详情和培养方案按稳定标识分散到 14 天内复查；目录新增或摘要变化仍立即获取。
+课程详情每批 100 门、最多两批并行；教务课表按教学班分块并行，认证 HTTP 连接池最多 3 条连接。
+所有批量采集共用有界任务池，按输入顺序汇总，
+失败时取消并等待其余请求退出，再由原有逻辑回滚。课程、教务和目录采集共用一次登录，
+Young 的令牌会话与 Blackboard 的匿名访客会话独立。采集器之间仍顺序提交 SQLite。
+HTTPX 负责连接与 Cookie，Tenacity 负责有界重试；Patchright 通过元素、URL 和令牌就绪
+条件推进登录，避免固定睡眠与 `networkidle` 轮询。日志使用标准 `logging` 与 Rich，
+在 GitHub Actions 中按采集器分组，输出耗时与精简异常栈，不输出异常局部变量。
+培养方案复查结果没有内容变化时，不重建展开的课程成员表。
 
 ## License & Warranty
 

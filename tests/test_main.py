@@ -1,8 +1,11 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import main
 from main import _run_builders
 
 
@@ -23,13 +26,14 @@ class BuilderIsolationTest(unittest.IsolatedAsyncioTestCase):
                 nonlocal later_builder_ran
                 later_builder_ran = True
 
-            results = await _run_builders(
-                [
-                    ("curriculum", failing_builder, (shared_output,)),
-                    ("young", succeeding_builder, (shared_output,)),
-                ],
-                status_path=status_path,
-            )
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": ""}):
+                results = await _run_builders(
+                    [
+                        ("curriculum", failing_builder, (shared_output,)),
+                        ("young", succeeding_builder, (shared_output,)),
+                    ],
+                    status_path=status_path,
+                )
 
             status = json.loads(status_path.read_text(encoding="utf-8"))
 
@@ -38,3 +42,27 @@ class BuilderIsolationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(results["curriculum"]["status"], "failed")
             self.assertEqual(results["young"]["status"], "ok")
             self.assertEqual(status["builders"], results)
+
+    async def test_anonymous_catalog_collectors_share_one_session(self):
+        sessions = []
+
+        async def collect(session, store):
+            sessions.append(session)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(main, "__file__", str(Path(directory) / "main.py")),
+            patch.object(main, "load_dotenv"),
+            patch("sys.argv", ["main.py", "--catalog-relationships"]),
+            patch.object(main, "refresh_catalog_groups", collect),
+            patch.object(main, "refresh_study_plans", collect),
+            patch.object(main, "export_upstream_schemas", return_value=[]),
+            patch.object(
+                main, "USTCSession", side_effect=AssertionError("unexpected login")
+            ),
+        ):
+            await main._main()
+        self.assertEqual(len(sessions), 2)
+        self.assertIs(sessions[0], sessions[1])
+        self.assertTrue(sessions[0].client.is_closed)

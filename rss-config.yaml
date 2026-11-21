@@ -1,7 +1,0 @@
-feeds:
-  - url: "https://www.ustc.edu.cn/system/resource/code/rss/rssfeedg.jsp?type=list&treeid=1002&viewid=249541&mode=10&dbname=vsb&owner=1585251974&contentid=221571,221572,221573,221574"
-    xmlFilename: "ustc_news.xml"
-  - url: "https://www.teach.ustc.edu.cn/category/notice/feed"
-    xmlFilename: "ustc_teach.xml"
-  - url: "https://rss.life-ustc.tiankaima.dev/index.xml"
-    xmlFilename: "life-ustc.xml"

@@ -5,141 +5,76 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from src.utils.auth import (
-    LoginConfig,
-    RequestSession,
+from src.http import RequestSession
+from src.platforms.passport import (
     USTCSession,
     _create_request_http_client,
 )
 
 
 class RequestSessionTest(unittest.IsolatedAsyncioTestCase):
-    async def test_authenticated_http_client_ignores_environment_proxy(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "ALL_PROXY": "socks5://127.0.0.1:1",
-                "HTTPS_PROXY": "socks5://127.0.0.1:1",
-                "HTTP_PROXY": "socks5://127.0.0.1:1",
-            },
-        ):
-            client = _create_request_http_client(
-                cookies=httpx.Cookies(),
-                user_agent="test-agent",
-            )
+    async def test_http_session_smoke(self):
+        attempts = {}
 
-        try:
-            self.assertIsInstance(client, httpx.AsyncClient)
-        finally:
-            await client.aclose()
-
-    async def test_get_json_uses_http_client_cookies(self) -> None:
-        seen_cookie = ""
-
-        async def handler(request: httpx.Request) -> httpx.Response:
-            nonlocal seen_cookie
-            seen_cookie = request.headers.get("cookie", "")
-            return httpx.Response(200, json={"ok": True})
-
-        client = httpx.AsyncClient(
-            transport=httpx.MockTransport(handler),
-            cookies={"SESSION": "abc"},
-        )
-        try:
-            session = RequestSession(client=client, page=None)
-
-            payload = await session.get_json(
-                "https://catalog.ustc.edu.cn/api/teach/semester/list"
-            )
-
-            self.assertEqual(payload, {"ok": True})
-            self.assertIn("SESSION=abc", seen_cookie)
-        finally:
-            await client.aclose()
-
-    async def test_post_json_sends_json_body(self) -> None:
-        seen_content_type = ""
-        seen_payload = {}
-
-        async def handler(request: httpx.Request) -> httpx.Response:
-            nonlocal seen_content_type, seen_payload
-            seen_content_type = request.headers.get("content-type", "")
-            seen_payload = json.loads(request.content.decode())
-            return httpx.Response(200, json={"ok": True})
-
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        try:
-            session = RequestSession(client=client, page=None)
-
-            payload = await session.post_json(
-                "https://jw.ustc.edu.cn/ws/schedule-table/datum",
-                data={"lessonIds": ["1"]},
-            )
-
-            self.assertEqual(payload, {"ok": True})
-            self.assertEqual(seen_content_type, "application/json")
-            self.assertEqual(seen_payload, {"lessonIds": ["1"]})
-        finally:
-            await client.aclose()
-
-    async def test_post_json_honors_per_request_transient_retries(self) -> None:
-        attempts = 0
-
-        async def handler(request: httpx.Request) -> httpx.Response:
-            nonlocal attempts
-            attempts += 1
-            return httpx.Response(503, request=request)
-
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        try:
-            session = RequestSession(client=client, page=None)
-            with (
-                patch.object(session, "_request_retry_wait_ms", return_value=0),
-                self.assertRaises(httpx.HTTPStatusError),
-            ):
-                await session.post_json(
-                    "https://jw.ustc.edu.cn/ws/schedule-table/datum",
-                    data={"lessonIds": ["1"]},
-                    transient_retries=2,
+        async def handler(request):
+            path = request.url.path
+            attempts[path] = attempts.get(path, 0) + 1
+            if path == "/retry" and attempts[path] < 3:
+                return httpx.Response(503)
+            if path == "/forbidden":
+                return httpx.Response(403)
+            if path == "/for-std/course-select":
+                return httpx.Response(
+                    302,
+                    headers={
+                        "location": path + "/" + request.headers["cookie"].split("=")[1]
+                    },
                 )
-        finally:
-            await client.aclose()
+            if request.method == "POST":
+                self.assertEqual(json.loads(request.content), {"lessonIds": ["1"]})
+                self.assertIn("application/json", request.headers["content-type"])
+            self.assertIn("SESSION=", request.headers["cookie"])
+            return httpx.Response(200, json={"ok": True})
 
-        self.assertEqual(attempts, 3)
+        from src.platforms.jw import _get_jw_user_id
 
-
-class USTCSessionConfigTest(unittest.TestCase):
-    def test_login_timeout_defaults_to_one_minute(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            config = LoginConfig.from_env()
-
-        self.assertEqual(config.timeout_ms, 60_000)
-
-    def test_after_login_services_default_to_enabled(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "USTC_PASSPORT_USERNAME": "user",
-                "USTC_PASSPORT_PASSWORD": "password",
-                "USTC_PASSPORT_TOTP_URL": "",
-            },
+        async with (
+            httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                cookies={"SESSION": "101"},
+                follow_redirects=True,
+            ) as first,
+            httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                cookies={"SESSION": "202"},
+                follow_redirects=True,
+            ) as second,
         ):
-            session = USTCSession()
+            session = RequestSession(client=first, page=None)
+            with patch("src.http.retry_delay", return_value=0):
+                self.assertEqual(
+                    await session.get_json("https://example.test/retry"), {"ok": True}
+                )
+                await session.post_json(
+                    "https://example.test/post", data={"lessonIds": ["1"]}
+                )
+                with self.assertRaises(httpx.HTTPStatusError):
+                    await session.get_json("https://example.test/forbidden")
+            self.assertEqual(await _get_jw_user_id(session), "101")
+            self.assertEqual(
+                await _get_jw_user_id(RequestSession(client=second, page=None)), "202"
+            )
+            self.assertEqual(await _get_jw_user_id(session), "101")
+        self.assertEqual(attempts["/retry"], 3)
+        self.assertEqual(attempts["/forbidden"], 1)
+        self.assertEqual(attempts["/for-std/course-select"], 2)
 
-        self.assertTrue(session.after_login_services)
-
-    def test_after_login_services_can_be_disabled(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "USTC_PASSPORT_USERNAME": "user",
-                "USTC_PASSPORT_PASSWORD": "password",
-                "USTC_PASSPORT_TOTP_URL": "",
-            },
-        ):
-            session = USTCSession(after_login_services=False)
-
-        self.assertFalse(session.after_login_services)
+    async def test_authenticated_client_ignores_proxy(self):
+        with patch.dict(os.environ, {"ALL_PROXY": "socks5://127.0.0.1:1"}):
+            async with _create_request_http_client(
+                cookies=httpx.Cookies(), user_agent="test"
+            ) as client:
+                self.assertIsInstance(client, httpx.AsyncClient)
 
 
 class USTCSessionCleanupTest(unittest.IsolatedAsyncioTestCase):
@@ -160,7 +95,8 @@ class USTCSessionCleanupTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "src.utils.auth.async_playwright", return_value=_FakeManager(playwright)
+                "src.platforms.passport.async_playwright",
+                return_value=_FakeManager(playwright),
             ),
             self.assertRaisesRegex(RuntimeError, "launch failed"),
         ):
@@ -174,7 +110,8 @@ class USTCSessionCleanupTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "src.utils.auth.async_playwright", return_value=_FakeManager(playwright)
+                "src.platforms.passport.async_playwright",
+                return_value=_FakeManager(playwright),
             ),
             patch.object(
                 session, "_login", AsyncMock(side_effect=RuntimeError("login failed"))
@@ -196,6 +133,9 @@ class _FakeManager:
     async def __aenter__(self):
         return self.playwright
 
+    async def __aexit__(self, *_):
+        await self.playwright.stop()
+
 
 class _FakeChromium:
     def __init__(self, browser, launch_error=None) -> None:
@@ -210,7 +150,11 @@ class _FakeChromium:
 
 class _FakePlaywright:
     def __init__(self, launch_error=None) -> None:
-        self.page = type("Page", (), {"close": AsyncMock()})()
+        self.page = type(
+            "Page",
+            (),
+            {"close": AsyncMock(), "set_default_timeout": lambda self, _: None},
+        )()
         self.context = type(
             "Context",
             (),

@@ -13,12 +13,15 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from .models.api.catalog_api_teach_lesson_infos import TeachLessonInfosResponse
-from .models.api.catalog_api_teach_lesson_list_for_teach import TeachLessonListResponse
-from .models.api.catalog_api_teach_semester_list import TeachSemesterListResponse
-from .sqlite_store import SQLiteModelStore
-from .upstream_contracts import CATALOG_LESSON_INFOS, CATALOG_LESSONS
-from .utils.auth import RequestSession
+from src.batch import fetch_in_batches
+from src.http import RequestSession
+from src.models.api.catalog_api_teach_lesson_infos import TeachLessonInfosResponse
+from src.models.api.catalog_api_teach_lesson_list_for_teach import (
+    TeachLessonListResponse,
+)
+from src.models.api.catalog_api_teach_semester_list import TeachSemesterListResponse
+from src.sqlite_store import SQLiteModelStore
+from src.upstream_contracts import CATALOG_LESSON_INFOS, CATALOG_LESSONS
 
 API = "https://catalog.ustc.edu.cn/api/teach"
 SEMESTER_LIST_URL = f"{API}/semester/list"
@@ -192,14 +195,13 @@ async def _profile_batch(session, term, codes, lessons):
 async def _profile_batches(session, term, lessons, allow_absence):
     batches = batched(sorted(lessons), BATCH_SIZE, strict=False)
 
-    async def fetch(position, batch):
-        await asyncio.sleep(position * REQUEST_INTERVAL_SECONDS)
-        return await _profile_batch(session, term, list(batch), lessons)
+    async def fetch(batch):
+        return batch, await _profile_batch(session, term, list(batch), lessons)
 
     # Fetch the first batch on its own so historical 404s never fan out.
     if first := next(batches, ()):
         try:
-            yield first, await fetch(0, first)
+            yield await fetch(first)
         except httpx.HTTPStatusError as error:
             if (
                 not allow_absence
@@ -207,21 +209,20 @@ async def _profile_batches(session, term, lessons, allow_absence):
             ):
                 raise
             try:
-                await fetch(0, first[:1])
+                await fetch(first[:1])
             except httpx.HTTPStatusError as retry:
                 if retry.response.status_code in HISTORIC_NOT_FOUND:
                     yield first, None
                     return
                 raise
             raise error
-    for window in batched(batches, MAX_PROFILE_REQUESTS, strict=False):
-        results = await asyncio.gather(
-            *(fetch(i, codes) for i, codes in enumerate(window)), return_exceptions=True
-        )
-        for codes, result in zip(window, results, strict=True):
-            if isinstance(result, BaseException):
-                raise result
-            yield codes, result
+    for result in await fetch_in_batches(
+        fetch,
+        batches,
+        MAX_PROFILE_REQUESTS,
+        MAX_PROFILE_REQUESTS * REQUEST_INTERVAL_SECONDS,
+    ):
+        yield result
 
 
 async def _profiles(session, term, lessons, *, allow_absence=False, complete=False):
@@ -422,8 +423,8 @@ async def _refresh_term(
                         f"ON {CATALOG_LESSON_INFOS}({fields})"
                     )
         store.put_metadata({key: json.dumps(metadata, ensure_ascii=False)})
-    return (
-        not explicit or public is not None and not metadata["lesson_infos_unavailable"]
+    return not explicit or (
+        public is not None and not metadata["lesson_infos_unavailable"]
     )
 
 

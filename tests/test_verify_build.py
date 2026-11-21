@@ -71,15 +71,13 @@ class BuildVerificationTest(unittest.TestCase):
                 json.dumps(
                     {
                         "builders": {
-                            name: {"status": "ok" if name == "rss" else "failed"}
+                            name: {"status": "ok" if name == "blackboard" else "failed"}
                             for name in BUILDER_NAMES
                         }
                     }
                 ),
                 encoding="utf-8",
             )
-            (build_dir / "rss").mkdir()
-            (build_dir / "rss" / "feed.xml").write_text("<rss />", encoding="utf-8")
             (build_dir / "imgs" / "rooms").mkdir(parents=True)
             (build_dir / "imgs" / "rooms" / "3A201.png").write_bytes(b"png")
             (build_dir / "room_maps.json").write_text(

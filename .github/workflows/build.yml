@@ -7,6 +7,12 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "Collector to rehearse (single collectors do not publish)"
+        type: choice
+        default: all
+        options: [all, academic, jw, young, blackboard]
   repository_dispatch:
     types: [retry_job]
 
@@ -20,6 +26,11 @@ concurrency:
 
 jobs:
   update:
+    name: Collect ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["academic","jw","young","blackboard"]') }}
     runs-on: ubuntu-latest
     # A cold run includes all school semesters and bounded historical exam requests.
     timeout-minutes: 90
@@ -33,29 +44,39 @@ jobs:
       - name: Resolve pinned patchright version
         id: patchright
         run: |
-          version=$(grep -A1 '^name = "patchright"$' uv.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
-          test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          python - <<'PYTHON' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open("uv.lock", "rb") as lock:
+              packages = tomllib.load(lock)["package"]
+          print("version=" + next(p["version"] for p in packages if p["name"] == "patchright"))
+          PYTHON
       - name: Cache Playwright browsers
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-patchright-${{ steps.patchright.outputs.version }}
       - name: Install dependencies
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
-          uv sync --no-dev
+          uv sync --frozen --no-dev
           uv run --no-dev patchright install chromium
-      - name: Restore previous Pages artifact cache
+      - name: Restore previous platform or Pages cache
         env:
           GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          mapfile -t run_ids < <(gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow build.yml \
-            --limit 50 \
-            --json databaseId,headBranch,conclusion \
-            --jq '[.[] | select(.headBranch == "master" and .conclusion == "success")][:7][].databaseId')
+          mapfile -t run_ids < <(
+            if [ "$GITHUB_REF_NAME" != master ] && [ "$PLATFORM" != academic ]; then
+              gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+                --branch "$GITHUB_REF_NAME" --limit 20 --json databaseId,conclusion \
+                --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][:3][].databaseId'
+            fi
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+              --branch master --limit 50 --json databaseId,conclusion \
+              --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][:7][].databaseId'
+          )
           if [ "${#run_ids[@]}" -eq 0 ]; then
             echo "No previous successful build artifact found"
             exit 0
@@ -63,6 +84,16 @@ jobs:
 
           mkdir -p build
           for run_id in "${run_ids[@]}"; do
+            platform_cache="$RUNNER_TEMP/platform-$run_id"
+            if [ "$PLATFORM" != academic ] &&
+              gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+                --name "static-$PLATFORM" --dir "$platform_cache" &&
+              test -s "$platform_cache/life-ustc-static.sqlite" &&
+              python -c 'import json,sys; rows=list(json.load(open(sys.argv[1]))["builders"].values()); sys.exit(not rows or any(r["status"] != "ok" for r in rows))' "$platform_cache/build-status.json"; then
+              cp "$platform_cache/life-ustc-static.sqlite" build/
+              echo "Restored $PLATFORM cache from $run_id"
+              exit 0
+            fi
             rm -rf /tmp/previous-pages
             mkdir -p /tmp/previous-pages
             if gh run download "$run_id" \
@@ -80,14 +111,50 @@ jobs:
             echo "::warning title=Previous build cache unavailable::Artifact from run $run_id could not be restored"
           done
           echo "::warning title=Incremental cache unavailable::No recent successful Pages artifact could be restored; running a full rebuild"
-      - name: Run Program
+      - name: Collect platform
+        continue-on-error: true
         env:
+          PLATFORM: ${{ matrix.platform }}
           TZ: "Asia/Shanghai"
           USTC_PASSPORT_USERNAME: ${{ secrets.USTC_PASSPORT_USERNAME }}
           USTC_PASSPORT_PASSWORD: ${{ secrets.USTC_PASSPORT_PASSWORD }}
           USTC_PASSPORT_TOTP_URL: ${{ secrets.USTC_PASSPORT_TOTP_URL }}
         run: |
-          uv run --no-dev python main.py
+          uv run --no-dev python main.py --platform "$PLATFORM"
+      - name: Extract platform result
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: uv run --no-dev python -m tools.platform_snapshots extract build out --platform "$PLATFORM"
+      - name: Upload platform result
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: static-${{ matrix.platform }}
+          path: out/
+          compression-level: 1
+          retention-days: 7
+
+  assemble:
+    if: ${{ !inputs.platform || inputs.platform == 'all' }}
+    needs: update
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+      - name: Download platform results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: static-*
+          path: parts/
+      - name: Assemble snapshot and assets
+        run: |
+          uv run --no-dev python -m tools.platform_snapshots merge parts build
+          cp -R static/. build/
+          uv run --no-dev python -m tools.room_maps --source-dir static --output-dir build
       - name: Verify SQLite snapshots and schemas
         run: |
           uv run --no-dev python tools/verify_build.py
@@ -112,7 +179,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: update
+    needs: assemble
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

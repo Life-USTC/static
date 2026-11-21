@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, Strict, TypeAdapter
 
-from .sqlite_store import SQLiteModelStore
-from .utils.auth import RequestSession
-from .utils.catalog import catalog_json, fetch_in_batches
+from src.batch import fetch_in_batches, refresh_due
+from src.http import RequestSession
+from src.platforms.catalog.api import catalog_json
+from src.sqlite_store import SQLiteModelStore
 
 _SOURCE = "https://catalog.ustc.edu.cn/api/teach"
 PROGRAM_TREE_URL = f"{_SOURCE}/program/tree"
@@ -21,7 +22,6 @@ PROGRAM_TREE_TABLE = "catalog_teach_program_tree"
 PROGRAM_INFO_TABLE = "catalog_teach_program_info"
 COURSE_MODULE_TABLE = "catalog_teach_course_module_info"
 PROGRAM_COURSES_TABLE = "catalog_teach_program_courses"
-REFRESH_AGE = timedelta(days=14)
 FETCH_CONCURRENCY = 4
 FETCH_INTERVAL_SECONDS = 0.22
 
@@ -131,7 +131,7 @@ async def _fetch_resources(
 
 
 def _cached(
-    store: SQLiteModelStore, table: str, id_column: str, cutoff: datetime
+    store: SQLiteModelStore, table: str, id_column: str, now: datetime
 ) -> dict[int, Resource]:
     conn = store.conn
     if not store.has_table(table):
@@ -139,15 +139,14 @@ def _cached(
 
     summary = "data.summary_json" if table == PROGRAM_INFO_TABLE else "NULL"
     return {
-        id_: Resource(payload, fetch_id, bool(fresh), index)
-        for id_, payload, fetch_id, fresh, index in conn.execute(
+        id_: Resource(
+            payload, fetch_id, not refresh_due(f"{table}/{id_}", fetched, now), index
+        )
+        for id_, payload, fetch_id, fetched, index in conn.execute(
             f"SELECT data.{id_column}, data.payload_json, fetch.id, "
-            "(fetch.fetched_at LIKE '%+__:__' OR fetch.fetched_at LIKE '%-__:__' "
-            "OR fetch.fetched_at LIKE '%Z') AND "
-            f"julianday(fetch.fetched_at) >= julianday(?), {summary} "
+            f"fetch.fetched_at, {summary} "
             f"FROM {table} data JOIN upstream_fetches fetch "
             "ON fetch.id = data.fetch_id",
-            (cutoff.isoformat(),),
         )
     }
 
@@ -164,9 +163,11 @@ def _memberships(
         path_json = catalog_json(module_path)
         for course_position, item in enumerate(module.courses or ()):
             course = item.get("course")
-            if course is not None and not isinstance(course, dict):
+            if course is None:
+                continue
+            if not isinstance(course, dict):
                 raise ValueError("Study plan membership course must be an object")
-            code = course.get("code") if course else None
+            code = course.get("code")
             if code is None or code == "":
                 continue
             if not isinstance(code, str):
@@ -246,11 +247,11 @@ def _save_resources(
 
 async def refresh_study_plans(session: RequestSession, store: SQLiteModelStore) -> None:
     """Refresh the public program index, plan details and reachable public modules."""
-    cutoff = datetime.now(UTC) - REFRESH_AGE
+    now = datetime.now(UTC)
     tree = await _fetch(session, PROGRAM_TREE_URL)
     index = _index(tree)
-    old_programs = _cached(store, PROGRAM_INFO_TABLE, "program_id", cutoff)
-    old_modules = _cached(store, COURSE_MODULE_TABLE, "module_id", cutoff)
+    old_programs = _cached(store, PROGRAM_INFO_TABLE, "program_id", now)
+    old_modules = _cached(store, COURSE_MODULE_TABLE, "module_id", now)
     if (
         old_programs.keys() - index.keys()
         and _index(await _fetch(session, PROGRAM_TREE_URL)) != index
@@ -288,7 +289,11 @@ async def refresh_study_plans(session: RequestSession, store: SQLiteModelStore) 
             set(_references(module_payloads[id_] for id_ in batch)) - modules.keys()
         )
 
-    changed = old_programs != programs or old_modules != modules
+    changed = any(
+        {id_: resource.payload_json for id_, resource in old.items()}
+        != {id_: resource.payload_json for id_, resource in new.items()}
+        for old, new in ((old_programs, programs), (old_modules, modules))
+    )
     conn = store.conn
     conn.execute("SAVEPOINT public_study_plans")
     try:

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import NoneType, UnionType
-from typing import Union, get_args, get_origin
+from typing import TypeIs, Union, get_args, get_origin
 
 from pydantic import BaseModel, RootModel
 
@@ -18,6 +18,12 @@ GUESSES_FILENAME = "life-ustc-static-guesses.sqlite"
 Scalar = str | int | float | bool
 JsonScalar = str | int | float | bool | None
 JsonValue = Mapping[str, object] | list[object] | JsonScalar
+
+
+def _insert_id(cursor: sqlite3.Cursor) -> int:
+    if cursor.lastrowid is None:
+        raise RuntimeError("SQLite insert did not return a row ID")
+    return cursor.lastrowid
 
 
 def _quote_identifier(value: str) -> str:
@@ -63,7 +69,7 @@ def _list_item_annotation(annotation: object) -> object | None:
     return None
 
 
-def _is_model_annotation(annotation: object) -> bool:
+def _is_model_annotation(annotation: object) -> TypeIs[type[BaseModel]]:
     annotation = _unwrap_optional(annotation)
     return isinstance(annotation, type) and issubclass(annotation, BaseModel)
 
@@ -222,7 +228,7 @@ class SQLiteModelStore:
                 datetime.now(UTC).isoformat(),
             ),
         )
-        return int(cursor.lastrowid)
+        return _insert_id(cursor)
 
     def put_metadata(self, items: Mapping[str, str | int]) -> None:
         self.conn.executemany(
@@ -521,16 +527,7 @@ class SQLiteModelStore:
             scalar_columns[external_name] = _column_type(annotation)
             scalar_values[external_name] = _scalar_value(value)
 
-        self._ensure_table(table_name, scalar_columns)
-        column_names = list(scalar_values.keys())
-        placeholders = ", ".join("?" for _ in column_names)
-        cursor = self.conn.execute(
-            f"INSERT INTO {_quote_identifier(table_name)} "
-            f"({', '.join(_quote_identifier(name) for name in column_names)}) "
-            f"VALUES({placeholders})",
-            [scalar_values[name] for name in column_names],
-        )
-        store_id = int(cursor.lastrowid)
+        store_id = self._insert_row(table_name, scalar_columns, scalar_values)
 
         for field_name, annotation, value in nested_items:
             if value is None:
@@ -623,20 +620,12 @@ class SQLiteModelStore:
             )
             values[key] = _scalar_value(context_value)
 
-        self._ensure_table(table_name, columns)
-        column_names = list(values.keys())
-        placeholders = ", ".join("?" for _ in column_names)
-        self.conn.execute(
-            f"INSERT INTO {_quote_identifier(table_name)} "
-            f"({', '.join(_quote_identifier(name) for name in column_names)}) "
-            f"VALUES({placeholders})",
-            [values[name] for name in column_names],
-        )
+        self._insert_row(table_name, columns, values)
 
     def _insert_json_value(
         self,
         table_name: str,
-        value: JsonValue,
+        value: object,
         *,
         fetch_id: int,
         context: Mapping[str, Scalar | None],
@@ -659,7 +648,7 @@ class SQLiteModelStore:
             for item_position, item in enumerate(value):
                 count += self._insert_json_value(
                     table_name,
-                    item,  # type: ignore[arg-type]
+                    item,
                     fetch_id=fetch_id,
                     context=context,
                     parent_store_id=parent_store_id,
@@ -667,6 +656,8 @@ class SQLiteModelStore:
                 )
             return count
 
+        if value is not None and not isinstance(value, (str, int, float, bool)):
+            raise TypeError(f"Unsupported JSON scalar: {type(value).__name__}")
         self._insert_json_scalar(
             table_name,
             value,
@@ -769,4 +760,4 @@ class SQLiteModelStore:
             f"VALUES({placeholders})",
             [values[name] for name in column_names],
         )
-        return int(cursor.lastrowid)
+        return _insert_id(cursor)

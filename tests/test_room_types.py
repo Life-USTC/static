@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from src.models.api.jw_for_std_lesson_search_semester import RoomType
-from src.room_types import _parse_room_types, ensure_room_types
+from src.platforms.jw import _parse_room_types, ensure_room_types
 from src.sqlite_store import SCHEMA_VERSION, SQLiteModelStore
 
 
@@ -71,7 +71,8 @@ class RoomTypeTest(unittest.IsolatedAsyncioTestCase):
                 return _payload(29) if semester_id == "241" else _payload(23, 30)
 
             with patch(
-                "src.room_types.fetch_jw_courses_json", AsyncMock(side_effect=fetch)
+                "src.platforms.jw.fetch_jw_courses_json",
+                AsyncMock(side_effect=fetch),
             ) as request:
                 await ensure_room_types(session=MagicMock(), store=store)
                 self.assertEqual(request.await_count, 2)
@@ -96,7 +97,9 @@ class RoomTypeTest(unittest.IsolatedAsyncioTestCase):
                 "VALUES (?, ?, ?)",
                 [(23, "23", "普通教室"), (29, "29", "其他教室")],
             )
-            with patch("src.room_types.fetch_jw_courses_json", AsyncMock()) as request:
+            with patch(
+                "src.platforms.jw.fetch_jw_courses_json", AsyncMock()
+            ) as request:
                 await ensure_room_types(session=MagicMock(), store=store)
                 request.assert_not_awaited()
         finally:
@@ -107,7 +110,7 @@ class RoomTypeTest(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch(
-                    "src.room_types.fetch_jw_courses_json",
+                    "src.platforms.jw.fetch_jw_courses_json",
                     AsyncMock(side_effect=httpx.ConnectError("unavailable")),
                 ),
                 self.assertRaisesRegex(ValueError, "Unresolved JW room types"),
@@ -130,7 +133,8 @@ class RoomTypeTest(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch(
-                    "src.room_types.fetch_jw_courses_json", AsyncMock(side_effect=error)
+                    "src.platforms.jw.fetch_jw_courses_json",
+                    AsyncMock(side_effect=error),
                 ),
                 self.assertRaises(ValueError),
             ):

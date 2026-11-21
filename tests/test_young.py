@@ -11,8 +11,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from main import _run_builders
-from src.sqlite_store import SQLiteModelStore
-from src.young import (
+from src.platforms.young import (
     SNAPSHOT_FILENAME,
     YOUNG_ACTIVE_ENDPOINT,
     YOUNG_ENDED_ENDPOINT,
@@ -21,7 +20,6 @@ from src.young import (
     YOUNG_TREE_ENDPOINT,
     YoungReferencedNames,
     _access_token_from_storage,
-    _delete_young_source,
     _fetch_young_event_list,
     _fetch_young_referenced_names,
     _referenced_tree_names,
@@ -31,6 +29,7 @@ from src.young import (
     _young_referenced_ids,
     make_young_events,
 )
+from src.sqlite_store import SQLiteModelStore
 from tests.fixtures.catalog_cache import seed_catalog_cache
 from tools.verify_build import BUILDER_NAMES, verify_build
 
@@ -119,38 +118,6 @@ class YoungEventStoreTest(unittest.TestCase):
         )
         self.assertEqual(metadata[f"{YOUNG_ENDED_SOURCE}_record_count"], "2")
         self.assertEqual(metadata[f"{YOUNG_ENDED_SOURCE}_total"], "2")
-
-    def test_delete_young_source_removes_previous_payload_rows(self) -> None:
-        store = SQLiteModelStore(":memory:")
-        try:
-            _store_young_event_payload(
-                store,
-                source=YOUNG_ENDED_SOURCE,
-                endpoint="/mobile/item/endList",
-                payload={
-                    "success": True,
-                    "result": {
-                        "total": 1,
-                        "records": [{"id": "ended-1", "itemName": "Ended 1"}],
-                    },
-                },
-                list_type="ended",
-                page_size=3000,
-            )
-
-            _delete_young_source(store, YOUNG_ENDED_SOURCE)
-
-            fetch_count = store.conn.execute(
-                "SELECT COUNT(*) FROM upstream_fetches"
-            ).fetchone()[0]
-            record_count = store.conn.execute(
-                f"SELECT COUNT(*) FROM {YOUNG_ENDED_SOURCE}_result_records"
-            ).fetchone()[0]
-        finally:
-            store.close()
-
-        self.assertEqual(fetch_count, 0)
-        self.assertEqual(record_count, 0)
 
     def test_access_token_from_storage_reads_vue_storage_value(self) -> None:
         self.assertEqual(
@@ -293,12 +260,12 @@ class YoungEventRefreshTest(unittest.IsolatedAsyncioTestCase):
             )
 
             with (
-                patch("src.young.BUILD_DIR", build_dir),
+                patch("src.platforms.young.BUILD_DIR", build_dir),
                 patch(
-                    "src.young.USTCSession",
+                    "src.platforms.young.USTCSession",
                     lambda **_: session,
                 ),
-                patch("src.young._prepare_young_session", new=AsyncMock()),
+                patch("src.platforms.young._prepare_young_session", new=AsyncMock()),
             ):
                 await make_young_events()
 
@@ -377,12 +344,12 @@ class YoungEventRefreshTest(unittest.IsolatedAsyncioTestCase):
             )
 
             with (
-                patch("src.young.BUILD_DIR", build_dir),
+                patch("src.platforms.young.BUILD_DIR", build_dir),
                 patch(
-                    "src.young.USTCSession",
+                    "src.platforms.young.USTCSession",
                     lambda **_: session,
                 ),
-                patch("src.young._prepare_young_session", new=AsyncMock()),
+                patch("src.platforms.young._prepare_young_session", new=AsyncMock()),
                 self.assertRaises(RuntimeError),
             ):
                 await make_young_events()
@@ -648,12 +615,15 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                     page=page,
                 )
                 with (
-                    patch("src.young.BUILD_DIR", build),
+                    patch("src.platforms.young.BUILD_DIR", build),
                     patch(
-                        "src.young.USTCSession", lambda session=session, **_: session
+                        "src.platforms.young.USTCSession",
+                        lambda session=session, **_: session,
                     ),
-                    patch("src.young._prepare_young_session", new=AsyncMock()),
-                    self.assertLogs("src.young", level="INFO") as recorded,
+                    patch(
+                        "src.platforms.young._prepare_young_session", new=AsyncMock()
+                    ),
+                    self.assertLogs("src.platforms.young", level="INFO") as recorded,
                 ):
                     await make_young_events()
                 self.assertEqual(len(page.calls), 1)
@@ -785,9 +755,9 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                 page=FakeTreePage(),
             )
             with (
-                patch("src.young.BUILD_DIR", build),
-                patch("src.young.USTCSession", lambda **_: session),
-                patch("src.young._prepare_young_session", new=AsyncMock()),
+                patch("src.platforms.young.BUILD_DIR", build),
+                patch("src.platforms.young.USTCSession", lambda **_: session),
+                patch("src.platforms.young._prepare_young_session", new=AsyncMock()),
             ):
                 await make_young_events()
             store = SQLiteModelStore(build / SNAPSHOT_FILENAME, reset=False)
@@ -870,11 +840,14 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                     page=FakeTreePage(fail=True),
                 )
                 with (
-                    patch("src.young.BUILD_DIR", build),
+                    patch("src.platforms.young.BUILD_DIR", build),
                     patch(
-                        "src.young.USTCSession", lambda session=session, **_: session
+                        "src.platforms.young.USTCSession",
+                        lambda session=session, **_: session,
                     ),
-                    patch("src.young._prepare_young_session", new=AsyncMock()),
+                    patch(
+                        "src.platforms.young._prepare_young_session", new=AsyncMock()
+                    ),
                 ):
                     await make_young_events()
                 store = SQLiteModelStore(build / SNAPSHOT_FILENAME, reset=False)
@@ -929,9 +902,9 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                 page=FakeTreePage(),
             )
             with (
-                patch("src.young.BUILD_DIR", build),
-                patch("src.young.USTCSession", lambda **_: session),
-                patch("src.young._prepare_young_session", new=AsyncMock()),
+                patch("src.platforms.young.BUILD_DIR", build),
+                patch("src.platforms.young.USTCSession", lambda **_: session),
+                patch("src.platforms.young._prepare_young_session", new=AsyncMock()),
                 self.assertRaisesRegex(sqlite3.IntegrityError, "storage rejection"),
             ):
                 await make_young_events()
@@ -951,9 +924,9 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                 page=FakeTreePage(),
             )
             with (
-                patch("src.young.BUILD_DIR", build),
-                patch("src.young.USTCSession", lambda **_: session),
-                patch("src.young._prepare_young_session", new=AsyncMock()),
+                patch("src.platforms.young.BUILD_DIR", build),
+                patch("src.platforms.young.USTCSession", lambda **_: session),
+                patch("src.platforms.young._prepare_young_session", new=AsyncMock()),
             ):
                 await make_young_events()
             store = SQLiteModelStore(build / SNAPSHOT_FILENAME, reset=False)
@@ -963,8 +936,6 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
             schemas.mkdir(parents=True)
             for index in range(11):
                 (schemas / f"schema-{index}.expected.schema.json").write_text("{}")
-            (build / "rss").mkdir()
-            (build / "rss" / "feed.xml").write_text("<rss />")
             (build / "imgs" / "rooms").mkdir(parents=True)
             (build / "imgs" / "rooms" / "3A201.png").write_bytes(b"png")
             (build / "room_maps.json").write_text(
@@ -984,7 +955,7 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
             )
             status = build / "build-status.json"
             results = {
-                name: {"status": "ok" if name in {"young", "rss"} else "failed"}
+                name: {"status": "ok" if name == "young" else "failed"}
                 for name in BUILDER_NAMES
             }
             status.write_text(json.dumps({"builders": results}))
@@ -1033,10 +1004,13 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                     cancelled = True
 
             with (
-                patch("src.young.BUILD_DIR", build),
-                patch("src.young.USTCSession", lambda **_: session),
-                patch("src.young._prepare_young_session", new=AsyncMock()),
-                patch("src.young._fetch_young_referenced_names", new=never_settle),
+                patch("src.platforms.young.BUILD_DIR", build),
+                patch("src.platforms.young.USTCSession", lambda **_: session),
+                patch("src.platforms.young._prepare_young_session", new=AsyncMock()),
+                patch(
+                    "src.platforms.young._fetch_young_referenced_names",
+                    new=never_settle,
+                ),
             ):
                 await make_young_events()
             self.assertTrue(cancelled)
@@ -1077,9 +1051,9 @@ class YoungReferencedNamesTest(unittest.IsolatedAsyncioTestCase):
                 page=page,
             )
             with (
-                patch("src.young.BUILD_DIR", build),
-                patch("src.young.USTCSession", lambda **_: session),
-                patch("src.young._prepare_young_session", new=AsyncMock()),
+                patch("src.platforms.young.BUILD_DIR", build),
+                patch("src.platforms.young.USTCSession", lambda **_: session),
+                patch("src.platforms.young._prepare_young_session", new=AsyncMock()),
                 self.assertRaises(RuntimeError),
             ):
                 await make_young_events()

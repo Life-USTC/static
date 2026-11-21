@@ -113,7 +113,7 @@ def course_id_of(url: str) -> str | None:
 def is_login_url(url: str) -> bool:
     """Whether a URL points at the Blackboard login shell."""
 
-    return urlsplit(url).path.startswith(LOGIN_PATH_PREFIX)
+    return urlsplit(url).path.startswith((LOGIN_PATH_PREFIX, "/nginx_auth"))
 
 
 def is_login_document(html: str) -> bool:

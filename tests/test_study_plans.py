@@ -3,17 +3,16 @@ import unittest
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
-from src.sqlite_store import SQLiteModelStore
-from src.study_plans import (
+from src.platforms.catalog.plans import (
     COURSE_MODULE_TABLE,
     COURSE_MODULE_URL,
     PROGRAM_COURSES_TABLE,
     PROGRAM_INFO_TABLE,
     PROGRAM_INFO_URL,
     PROGRAM_TREE_URL,
-    REFRESH_AGE,
     refresh_study_plans,
 )
+from src.sqlite_store import SQLiteModelStore
 
 
 def node(id_, *, public=None, children=(), code=None):
@@ -76,7 +75,7 @@ class StudyPlansTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_projection_and_stale_refresh(self):
         await refresh_study_plans(self, self.store)
-        expired = (datetime.now(UTC) - REFRESH_AGE - timedelta(days=1)).isoformat()
+        expired = (datetime.now(UTC) - timedelta(days=15)).isoformat()
         self.store.conn.execute(
             "UPDATE upstream_fetches SET fetched_at=? WHERE source=?",
             (expired, COURSE_MODULE_TABLE),

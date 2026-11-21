@@ -1,11 +1,11 @@
 """Refresh the official course substitution pool without merging directional rules."""
 
-from .models.api.catalog_api_teach_course_substitutes import (
+from src.http import RequestSession
+from src.models.api.catalog_api_teach_course_substitutes import (
     CATALOG_COURSE_SUBSTITUTES,
     CourseSubstitutesResponse,
 )
-from .sqlite_store import SQLiteModelStore
-from .utils.auth import RequestSession
+from src.sqlite_store import SQLiteModelStore
 
 COURSE_SUBSTITUTES_URL = (
     "https://catalog.ustc.edu.cn/api/teach/course-substitute-pool/list"
