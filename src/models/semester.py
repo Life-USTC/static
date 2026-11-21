@@ -1,21 +1,9 @@
-import datetime
-
-from pydantic import BaseModel
-
-from .course import Course
+from dataclasses import dataclass
 
 
-class Semester(BaseModel):
+@dataclass(frozen=True)
+class Semester:
     id: str
-    courses: list[Course]
     name: str
     startDate: int
     endDate: int
-
-    def __str__(self) -> str:
-        def date_fmt(ts: int) -> str:
-            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-
-        start_date = date_fmt(self.startDate)
-        end_date = date_fmt(self.endDate)
-        return f"Semester(id={self.id}, name={self.name}, {start_date} - {end_date})"

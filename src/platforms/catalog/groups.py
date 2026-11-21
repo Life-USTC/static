@@ -11,9 +11,10 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
-from .sqlite_store import SQLiteModelStore
-from .utils.auth import RequestSession
-from .utils.catalog import catalog_json, fetch_in_batches
+from src.batch import fetch_in_batches
+from src.http import RequestSession
+from src.platforms.catalog.api import catalog_json
+from src.sqlite_store import SQLiteModelStore
 
 CATALOG_GROUP_ENTRIES = "catalog_teach_course_group_entries"
 CATALOG_GROUP_ENDPOINTS = "catalog_teach_course_group_endpoints"

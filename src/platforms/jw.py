@@ -1,11 +1,70 @@
-"""Resolve lesson room-type references from authoritative JW lesson-search objects."""
+from urllib.parse import urlsplit
+from weakref import WeakKeyDictionary
 
 import httpx
 
-from .models.api.jw_for_std_lesson_search_semester import FieldPage, RoomType
-from .sqlite_store import SQLiteModelStore
-from .utils.auth import RequestSession
-from .utils.jw import fetch_jw_courses_json
+from src.http import RequestSession
+from src.models.api.catalog_api_teach_lesson_list_for_teach import TeachLessonListItem
+from src.models.api.jw_for_std_lesson_search_semester import FieldPage, RoomType
+from src.sqlite_store import SQLiteModelStore
+
+_jw_user_id_cache: WeakKeyDictionary[RequestSession, str] = WeakKeyDictionary()
+
+
+async def _get_jw_user_id(session: RequestSession) -> str:
+    if user_id := _jw_user_id_cache.get(session):
+        return user_id
+
+    response = await session.get("https://jw.ustc.edu.cn/for-std/course-select")
+    user_id = urlsplit(response.url).path.rstrip("/").rsplit("/", 1)[-1]
+    if not user_id.isnumeric():
+        raise ValueError("JW session is not authenticated")
+    _jw_user_id_cache[session] = user_id
+    return user_id
+
+
+async def fetch_jw_courses_json(session: RequestSession, semester_id: str) -> dict:
+    user_id = await _get_jw_user_id(session=session)
+    query = (
+        "courseCodeLike=&codeLike=&educationAssoc=&courseNameZhLike=&teacherNameLike=&"
+        "schedulePlace=&classCodeLike=&courseTypeAssoc=&classTypeAssoc=&campusAssoc=&"
+        "teachLangAssoc=&roomTypeAssoc=&examModeAssoc=&requiredPeriodInfo.totalGte=&"
+        "requiredPeriodInfo.totalLte=&requiredPeriodInfo.weeksGte=&requiredPeriodInfo.weeksLte=&"
+        "requiredPeriodInfo.periodsPerWeekGte=&requiredPeriodInfo.periodsPerWeekLte=&"
+        "limitCountGte=&limitCountLte=&majorAssoc=&majorDirectionAssoc=&"
+        "queryPage__=1%2C100000"
+    )
+    url = (
+        "https://jw.ustc.edu.cn/for-std/lesson-search/semester/"
+        + semester_id
+        + "/search/"
+        + user_id
+        + "?"
+        + query
+    )
+    headers = {
+        "accept": "application/json, text/javascript, */*; q=0.01",
+        "x-requested-with": "XMLHttpRequest",
+        "referer": f"https://jw.ustc.edu.cn/for-std/lesson-search/index/{user_id}",
+    }
+
+    return await session.get_json(
+        url=url, headers=headers, timeout=60_000, transient_retries=0
+    )
+
+
+async def fetch_jw_schedule_table_json(
+    session: RequestSession, course_list: list[TeachLessonListItem]
+) -> dict:
+    url = "https://jw.ustc.edu.cn/ws/schedule-table/datum"
+    course_id_list = [str(course.id) for course in course_list]
+    return await session.post_json(
+        url=url,
+        data={"lessonIds": course_id_list},
+        timeout=30_000,
+        transient_retries=2,
+    )
+
 
 ROOM_TYPE_SOURCE = "jw_lesson_search_room_types"
 

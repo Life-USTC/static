@@ -22,15 +22,21 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urljoin
 
 import httpx
 import yaml
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    retry_if_result,
+    stop_after_attempt,
+)
 
-from .models.blackboard import (
+from src.http import RETRY_STATUSES, last_result, retry_delay
+from src.models.blackboard import (
     ACCESS_AUTH_REQUIRED,
     ACCESS_ERROR,
     ACCESS_MODE_GUEST,
@@ -44,8 +50,8 @@ from .models.blackboard import (
     BlackboardPage,
     BlackboardResource,
 )
-from .sqlite_store import SNAPSHOT_FILENAME, SQLiteModelStore
-from .utils.blackboard_html import (
+from src.sqlite_store import SNAPSHOT_FILENAME, SQLiteModelStore
+from src.utils.blackboard_html import (
     classify_page,
     classify_resource,
     filename_from_url,
@@ -57,7 +63,7 @@ from .utils.blackboard_html import (
     parse_course_title,
     parse_page_title,
 )
-from .utils.tools import BASE_DIR, BUILD_DIR
+from src.utils.tools import BASE_DIR, BUILD_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +84,6 @@ LAUNCHER_PATH = "/webapps/blackboard/execute/launcher"
 LOGIN_PATH = "/webapps/login"
 CONTENT_PATH = "/webapps/blackboard/content/listContent.jsp"
 
-_RETRY_STATUSES = {429, 500, 502, 503, 504}
-_MAX_RETRY_WAIT_SECONDS = 30.0
 _HTML_INSPECT_BYTES = 256 * 1024
 
 
@@ -210,23 +214,6 @@ def load_blackboard_config(path: Path | None = None) -> BlackboardConfig:
     )
 
 
-def _retry_after_seconds(value: str | None) -> float:
-    if not value:
-        return 0.0
-    try:
-        return min(max(float(value), 0.0), _MAX_RETRY_WAIT_SECONDS)
-    except ValueError:
-        pass
-    try:
-        date = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if date.tzinfo is None:
-        date = date.replace(tzinfo=UTC)
-    delay = (date - datetime.now(UTC)).total_seconds()
-    return min(max(delay, 0.0), _MAX_RETRY_WAIT_SECONDS)
-
-
 class GuestSession:
     """A single polite, cookie-keeping, credential-free Blackboard client."""
 
@@ -286,33 +273,33 @@ class GuestSession:
         return await self.fetch_page(guest_login_url(self.config.base_url, course_id))
 
     async def fetch_page(self, url: str) -> FetchedPage:
-        last_error: Exception | None = None
-        for attempt in range(self.config.max_retries + 1):
+        async def request():
             await self._throttle()
             self.request_count += 1
-            try:
-                response = await self.client.get(url)
-            except httpx.HTTPError as error:
-                last_error = error
-                if attempt < self.config.max_retries:
-                    await asyncio.sleep(2**attempt)
-                    continue
-                break
-            if (
-                response.status_code in _RETRY_STATUSES
-                and attempt < self.config.max_retries
-            ):
-                wait_for = _retry_after_seconds(response.headers.get("retry-after"))
-                await asyncio.sleep(wait_for or 2**attempt)
-                continue
+            return await self.client.get(url)
+
+        try:
+            response = await AsyncRetrying(
+                stop=stop_after_attempt(self.config.max_retries + 1),
+                retry=retry_if_exception_type(httpx.HTTPError)
+                | retry_if_result(
+                    lambda response: response.status_code in RETRY_STATUSES
+                ),
+                wait=retry_delay,
+                retry_error_callback=last_result,
+                reraise=True,
+            )(request)
             return FetchedPage(
                 requested_url=url,
                 final_url=str(response.url),
                 status=response.status_code,
                 text=response.text,
             )
-        logger.warning("Blackboard page request failed for %s: %s", url, last_error)
-        return FetchedPage(requested_url=url, final_url=url, status=0, text="")
+        except httpx.HTTPError as error:
+            logger.warning(
+                "Blackboard page request failed for %s: %s", url, type(error).__name__
+            )
+            return FetchedPage(requested_url=url, final_url=url, status=0, text="")
 
     async def fetch_resource(
         self,

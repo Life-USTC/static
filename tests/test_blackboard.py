@@ -11,16 +11,6 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from src.blackboard import (
-    BlackboardConfig,
-    CourseConfig,
-    GuestSession,
-    crawl_course,
-    guest_login_url,
-    load_blackboard_config,
-    load_previous_resources,
-    make_blackboard,
-)
 from src.models.blackboard import (
     ACCESS_AUTH_REQUIRED,
     ACCESS_MODE_GUEST,
@@ -34,6 +24,16 @@ from src.models.blackboard import (
     PAGE_KIND_LOGIN,
     PAGE_KIND_NAVIGATION,
     PAGE_KIND_NOT_FOUND,
+)
+from src.platforms.bb import (
+    BlackboardConfig,
+    CourseConfig,
+    GuestSession,
+    crawl_course,
+    guest_login_url,
+    load_blackboard_config,
+    load_previous_resources,
+    make_blackboard,
 )
 from src.sqlite_store import SNAPSHOT_FILENAME, SQLiteModelStore
 from src.utils.blackboard_html import (
@@ -391,7 +391,7 @@ class BlackboardBuilderTest(unittest.IsolatedAsyncioTestCase):
         client = httpx.AsyncClient(
             transport=transport, follow_redirects=True, base_url=BASE_URL
         )
-        with patch("src.blackboard.BUILD_DIR", build_dir):
+        with patch("src.platforms.bb.BUILD_DIR", build_dir):
             await make_blackboard(config, client=client, download_dir=download_dir)
         await client.aclose()
         return transport

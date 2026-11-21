@@ -3,21 +3,22 @@
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from itertools import batched
 from urllib.parse import urlencode
 
-from .models.api.catalog_api_teach_course_infos import TeachCourseInfosResponse
-from .models.api.catalog_api_teach_course_search import TeachCourseSearchResponse
-from .sqlite_store import SQLiteModelStore
-from .upstream_contracts import CATALOG_COURSE_INFOS, CATALOG_COURSE_SEARCH
-from .utils.auth import RequestSession
+from src.batch import fetch_in_batches, refresh_due
+from src.http import RequestSession
+from src.models.api.catalog_api_teach_course_infos import TeachCourseInfosResponse
+from src.models.api.catalog_api_teach_course_search import TeachCourseSearchResponse
+from src.sqlite_store import SQLiteModelStore
+from src.upstream_contracts import CATALOG_COURSE_INFOS, CATALOG_COURSE_SEARCH
 
 COURSE_SEARCH_ENDPOINT = "https://catalog.ustc.edu.cn/api/teach/course/search"
 COURSE_SEARCH_URL = f"{COURSE_SEARCH_ENDPOINT}?keyword="
 COURSE_INFOS_URL = "https://catalog.ustc.edu.cn/api/teach/course/infos"
 DETAIL_BATCH_SIZE = 100
-DETAIL_REFRESH_AGE = timedelta(days=14)
+DETAIL_CONCURRENCY = 2
 DETAIL_REQUEST_INTERVAL_SECONDS = 0.15
 ABSENT = f"{CATALOG_COURSE_INFOS}_absent"
 OPTIONS = {"timeout": 60_000, "transient_retries": 1}
@@ -72,7 +73,7 @@ async def _details(session, requested, index):
         )
         return [code for code in codes if code not in checked]
 
-    for batch in batched(requested, DETAIL_BATCH_SIZE, strict=False):
+    async def fetch_batch(batch):
         missing = await fetch(batch)
         if 1 < len(missing) < len(batch):
             missing = await fetch(missing)
@@ -82,19 +83,17 @@ async def _details(session, requested, index):
             if index[code].valid:
                 raise ValueError(f"Active public course {code!r} has no detail")
             absent.add(code)
+
+    await fetch_in_batches(
+        fetch_batch,
+        batched(requested, DETAIL_BATCH_SIZE, strict=False),
+        DETAIL_CONCURRENCY,
+        0,
+    )
     return receipts, absent
 
 
-def _fresh(timestamp, now):
-    try:
-        return (
-            timedelta() <= now - datetime.fromisoformat(timestamp) < DETAIL_REFRESH_AGE
-        )
-    except (TypeError, ValueError):
-        return False
-
-
-def _delete_profiles(store, tables, discarded):
+def _delete_profiles(store, tables: set[str], discarded: list[int]):
     if not discarded:
         return
     # Remove descendants before deleting the selected profiles, without touching
@@ -160,7 +159,7 @@ async def refresh_course_catalog(
         code
         for code, summary in encoded.items()
         if summary != previous.get(code)
-        or not _fresh(saved.get(code, (None, absent.get(code)))[1], now)
+        or refresh_due(code, saved.get(code, (None, absent.get(code)))[1], now)
     ]
     LOGGER.info(
         "Refreshing %d profiles for %d catalogue codes", len(requested), len(index)

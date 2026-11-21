@@ -1,33 +1,42 @@
-import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from json import JSONDecodeError
 
 import httpx
-from tqdm import tqdm
 
-from .guesses import SQLiteGuessStore
-from .models.api.catalog_api_teach_department_college_tree import (
+from src.batch import fetch_in_batches
+from src.guesses import SQLiteGuessStore
+from src.http import RequestSession
+from src.models.api.catalog_api_teach_department_college_tree import (
     DepartmentCollegeTreeResponse,
 )
-from .models.api.catalog_api_teach_exam_list import TeachExamListResponse
-from .models.api.catalog_api_teach_lesson_list_for_teach import (
+from src.models.api.catalog_api_teach_exam_list import TeachExamListResponse
+from src.models.api.catalog_api_teach_lesson_list_for_teach import (
+    TeachLessonListItem,
     TeachLessonListResponse,
 )
-from .models.api.catalog_api_teach_semester_list import TeachSemesterListResponse
-from .models.api.jw_ws_schedule_table_datum import JwWsScheduleTableDatumResponse
-from .models.course import Course
-from .models.semester import Semester
-from .observed_contracts import (
+from src.models.api.catalog_api_teach_semester_list import TeachSemesterListResponse
+from src.models.api.jw_ws_schedule_table_datum import JwWsScheduleTableDatumResponse
+from src.models.semester import Semester
+from src.observed_contracts import (
     ObservedContractCollector,
     log_contract_diagnostics,
     publish_contract_artifacts,
 )
-from .room_types import ensure_room_types
-from .sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
-from .upstream_contracts import (
+from src.platforms.catalog.api import (
+    fetch_courses_json,
+    fetch_departments_json,
+    fetch_exams_json,
+    fetch_semesters_json,
+    parse_semesters,
+)
+from src.platforms.jw import ensure_room_types, fetch_jw_schedule_table_json
+from src.platforms.passport import USTCSession
+from src.sqlite_store import GUESSES_FILENAME, SNAPSHOT_FILENAME, SQLiteModelStore
+from src.upstream_contracts import (
     CATALOG_DEPARTMENTS,
     CATALOG_EXAMS,
     CATALOG_LESSONS,
@@ -36,17 +45,7 @@ from .upstream_contracts import (
     JW_SCHEDULES,
     UPSTREAM_RESPONSE_MODELS,
 )
-from .utils.auth import RequestSession, USTCSession
-from .utils.catalog import (
-    fetch_courses_json,
-    fetch_departments_json,
-    fetch_exams_json,
-    fetch_semesters_json,
-    parse_courses,
-    parse_semesters,
-)
-from .utils.jw import fetch_jw_schedule_table_json
-from .utils.tools import BASE_DIR, BUILD_DIR
+from src.utils.tools import BASE_DIR, BUILD_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -186,8 +185,8 @@ def _stored_course_ids_by_code(store: SQLiteModelStore) -> dict[str, int]:
 
 
 def _course_chunks(
-    courses: list[Course], chunk_size: int = JW_SCHEDULE_CHUNK_SIZE
-) -> list[list[Course]]:
+    courses: list[TeachLessonListItem], chunk_size: int = JW_SCHEDULE_CHUNK_SIZE
+) -> list[list[TeachLessonListItem]]:
     return [courses[i : i + chunk_size] for i in range(0, len(courses), chunk_size)]
 
 
@@ -557,7 +556,7 @@ async def _store_jw_schedule_chunks(
     contracts: ObservedContractCollector,
     semester_id: str,
     catalog_response: TeachLessonListResponse,
-    courses: list[Course],
+    courses: list[TeachLessonListItem],
 ) -> None:
     chunks = _course_chunks(courses)
     store.put_metadata(
@@ -567,8 +566,8 @@ async def _store_jw_schedule_chunks(
         }
     )
 
-    schedule_responses: list[JwWsScheduleTableDatumResponse] = []
-    for chunk_index, chunk in enumerate(chunks):
+    async def collect_chunk(item):
+        chunk_index, chunk = item
         try:
             payload = await fetch_jw_schedule_table_json(
                 session=session,
@@ -616,7 +615,6 @@ async def _store_jw_schedule_chunks(
                 raise ValueError(
                     f"JW schedule/group list is incomplete for {semester_id}"
                 )
-        schedule_responses.append(response)
         context = {"semester_id": semester_id, "chunk_index": chunk_index}
         store.store_fetched_response(
             JW_SCHEDULES,
@@ -626,7 +624,9 @@ async def _store_jw_schedule_chunks(
             context=context,
             row_context=context,
         )
+        return response
 
+    schedule_responses = await fetch_in_batches(collect_chunk, enumerate(chunks), 3, 0)
     if not _has_cached_jw_schedule(store, semester_id):
         raise RuntimeError(
             f"Incomplete JW schedule table chunks for semester {semester_id}"
@@ -722,7 +722,7 @@ async def _store_semester(
     )
     logger.info("Stored %s catalog lessons for semester %s", lesson_count, semester_id)
 
-    courses = parse_courses(payload)
+    courses = [lesson for lesson in catalog_response.root or [] if lesson]
     try:
         await _store_jw_schedule_chunks(
             session=session,
@@ -754,23 +754,13 @@ async def _collect_semesters(
     *,
     description: str,
 ) -> None:
-    semaphore = asyncio.Semaphore(CURRICULUM_FETCH_CONCURRENCY)
-    with tqdm(
-        total=len(semesters), position=1, leave=True, desc=description
-    ) as progress:
-
-        async def collect_one(semester: Semester) -> None:
-            async with semaphore:
-                await collect(semester)
-                progress.update(1)
-
-        # Drain cancelled requests before a fatal error rolls back SQLite.
-        async with asyncio.TaskGroup() as tasks:
-            for semester in semesters:
-                tasks.create_task(collect_one(semester))
+    logger.info("%s: %d semester(s)", description, len(semesters))
+    await fetch_in_batches(collect, semesters, CURRICULUM_FETCH_CONCURRENCY, 0)
 
 
-async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
+async def make_curriculum(
+    *, verify_upstream_contract: bool = False, session: RequestSession | None = None
+) -> None:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     snapshot_path = BUILD_DIR / SNAPSHOT_FILENAME
     guesses_path = BUILD_DIR / GUESSES_FILENAME
@@ -785,7 +775,9 @@ async def make_curriculum(*, verify_upstream_contract: bool = False) -> None:
     try:
         _register_upstream_tables(store)
         previous_course_ids_by_code = _stored_course_ids_by_code(store)
-        async with USTCSession() as session:
+        async with (
+            USTCSession() if session is None else nullcontext(session)
+        ) as session:
             store.delete_source_fetches(CATALOG_SEMESTERS)
             semesters = await _store_catalog_semesters(
                 session=session, store=store, contracts=contracts

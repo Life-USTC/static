@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
-from src.course_catalog import COURSE_SEARCH_URL, refresh_course_catalog
 from src.models.api.catalog_api_teach_course_infos import TeachCourseInfo
+from src.platforms.catalog.courses import COURSE_SEARCH_URL, refresh_course_catalog
 from src.sqlite_store import SQLiteModelStore
 from src.upstream_contracts import CATALOG_COURSE_INFOS as TABLE
 
@@ -31,7 +31,7 @@ class CourseCatalogTest(unittest.IsolatedAsyncioTestCase):
         self.db = self.store.conn
         self.enterContext(
             patch.multiple(
-                "src.course_catalog",
+                "src.platforms.catalog.courses",
                 DETAIL_BATCH_SIZE=2,
                 DETAIL_REQUEST_INTERVAL_SECONDS=0,
             )

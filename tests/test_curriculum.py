@@ -9,7 +9,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
-from src.curriculum import (
+from src.models.api.catalog_api_teach_lesson_list_for_teach import (
+    Course,
+    TeachLessonListItem,
+    TeachLessonListResponse,
+)
+from src.models.api.jw_ws_schedule_table_datum import LessonListItem
+from src.models.semester import Semester
+from src.observed_contracts import ObservedContractCollector
+from src.platforms.catalog.semesters import (
     ENDED_SEMESTER_CACHE_MAX_AGE_SECONDS,
     _cached_fresh_exam_semester_ids,
     _cached_fresh_lesson_semester_ids,
@@ -28,14 +36,6 @@ from src.curriculum import (
     _stored_course_ids_by_code,
     make_curriculum,
 )
-from src.models.api.catalog_api_teach_lesson_list_for_teach import (
-    Course,
-    TeachLessonListItem,
-    TeachLessonListResponse,
-)
-from src.models.api.jw_ws_schedule_table_datum import LessonListItem
-from src.models.semester import Semester
-from src.observed_contracts import ObservedContractCollector
 from src.sqlite_store import SQLiteModelStore
 
 
@@ -46,7 +46,6 @@ def _semester(
 ) -> Semester:
     return Semester(
         id=semester_id,
-        courses=[],
         name=f"semester {semester_id}",
         startDate=0,
         endDate=end_date,
@@ -231,7 +230,7 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
                 [(catalog_fetch_id,)] * 101,
             )
             with patch(
-                "src.curriculum.fetch_jw_schedule_table_json",
+                "src.platforms.catalog.semesters.fetch_jw_schedule_table_json",
                 new_callable=AsyncMock,
                 side_effect=[_jw_payload(list(range(100))), _jw_payload([100])],
             ):
@@ -287,7 +286,7 @@ class JwScheduleChunkTest(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch(
-                    "src.curriculum.fetch_jw_schedule_table_json",
+                    "src.platforms.catalog.semesters.fetch_jw_schedule_table_json",
                     new_callable=AsyncMock,
                     side_effect=[
                         _jw_payload(list(range(100))),
@@ -322,17 +321,17 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
                 try:
                     with (
                         patch(
-                            "src.curriculum.fetch_courses_json",
+                            "src.platforms.catalog.semesters.fetch_courses_json",
                             new_callable=AsyncMock,
                             return_value=[],
                         ) as lessons,
                         patch(
-                            "src.curriculum.fetch_exams_json",
+                            "src.platforms.catalog.semesters.fetch_exams_json",
                             new_callable=AsyncMock,
                             return_value=[],
                         ) as exams,
                         patch(
-                            "src.curriculum.fetch_jw_schedule_table_json",
+                            "src.platforms.catalog.semesters.fetch_jw_schedule_table_json",
                             new_callable=AsyncMock,
                         ) as jw,
                     ):
@@ -387,7 +386,7 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
             try:
                 with (
                     patch(
-                        "src.curriculum.fetch_semesters_json",
+                        "src.platforms.catalog.semesters.fetch_semesters_json",
                         AsyncMock(return_value=payload),
                     ),
                     self.assertRaises(ValueError),
@@ -415,10 +414,11 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch(
-                    "src.curriculum.fetch_courses_json", AsyncMock(return_value=payload)
+                    "src.platforms.catalog.semesters.fetch_courses_json",
+                    AsyncMock(return_value=payload),
                 ),
                 patch(
-                    "src.curriculum.fetch_jw_schedule_table_json",
+                    "src.platforms.catalog.semesters.fetch_jw_schedule_table_json",
                     AsyncMock(
                         side_effect=[
                             _jw_payload(list(range(1, 101))),
@@ -454,7 +454,10 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
                 0,
             )
             self.assertFalse(_has_cached_jw_schedule(store, "201"))
-            with patch("src.curriculum.fetch_courses_json", AsyncMock(return_value=[])):
+            with patch(
+                "src.platforms.catalog.semesters.fetch_courses_json",
+                AsyncMock(return_value=[]),
+            ):
                 await _store_semester(
                     session=MagicMock(),
                     store=store,
@@ -490,7 +493,8 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
             _register_upstream_tables(store)
             try:
                 with patch(
-                    "src.curriculum.fetch_courses_json", AsyncMock(side_effect=error)
+                    "src.platforms.catalog.semesters.fetch_courses_json",
+                    AsyncMock(side_effect=error),
                 ):
                     await _store_semester(
                         session=MagicMock(),
@@ -512,7 +516,7 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch(
-                    "src.curriculum.fetch_courses_json",
+                    "src.platforms.catalog.semesters.fetch_courses_json",
                     AsyncMock(side_effect=httpx.LocalProtocolError("invalid request")),
                 ),
                 self.assertRaises(httpx.LocalProtocolError),
@@ -551,7 +555,8 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
             store = SQLiteModelStore(":memory:")
             try:
                 with patch(
-                    "src.curriculum.fetch_exams_json", AsyncMock(side_effect=error)
+                    "src.platforms.catalog.semesters.fetch_exams_json",
+                    AsyncMock(side_effect=error),
                 ):
                     await _store_catalog_exams(
                         session=MagicMock(),
@@ -578,7 +583,10 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
         store = SQLiteModelStore(":memory:")
         try:
             with (
-                patch("src.curriculum.fetch_exams_json", AsyncMock(return_value=None)),
+                patch(
+                    "src.platforms.catalog.semesters.fetch_exams_json",
+                    AsyncMock(return_value=None),
+                ),
                 self.assertRaises(ValueError),
             ):
                 await _store_catalog_exams(
@@ -607,7 +615,7 @@ class HistoricalSemesterFetchTest(unittest.IsolatedAsyncioTestCase):
             try:
                 with (
                     patch(
-                        "src.curriculum.fetch_jw_schedule_table_json",
+                        "src.platforms.catalog.semesters.fetch_jw_schedule_table_json",
                         AsyncMock(return_value=payload),
                     ),
                     self.assertRaises(ValueError),
@@ -641,7 +649,7 @@ class CurriculumRefreshTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 cancelled.set()
 
-        with self.assertRaises(ExceptionGroup):
+        with self.assertRaisesRegex(ValueError, "incompatible response"):
             await _collect_semesters(
                 [_semester("1"), _semester("2")], collect, description="test"
             )
@@ -662,24 +670,29 @@ class CurriculumRefreshTest(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             with (
-                patch("src.curriculum.BUILD_DIR", root),
-                patch("src.curriculum.BASE_DIR", root),
-                patch("src.curriculum.USTCSession"),
+                patch("src.platforms.catalog.semesters.BUILD_DIR", root),
+                patch("src.platforms.catalog.semesters.BASE_DIR", root),
+                patch("src.platforms.catalog.semesters.USTCSession"),
                 patch(
-                    "src.curriculum.fetch_semesters_json",
+                    "src.platforms.catalog.semesters.fetch_semesters_json",
                     AsyncMock(return_value=semesters),
                 ),
                 patch(
-                    "src.curriculum.fetch_departments_json", AsyncMock(return_value=[])
+                    "src.platforms.catalog.semesters.fetch_departments_json",
+                    AsyncMock(return_value=[]),
                 ),
                 patch(
-                    "src.curriculum.fetch_courses_json", AsyncMock(return_value=[])
+                    "src.platforms.catalog.semesters.fetch_courses_json",
+                    AsyncMock(return_value=[]),
                 ) as lessons,
                 patch(
-                    "src.curriculum.fetch_exams_json",
+                    "src.platforms.catalog.semesters.fetch_exams_json",
                     AsyncMock(side_effect=[[], httpx.ReadTimeout("timed out"), []]),
                 ) as exams,
-                patch("src.curriculum.publish_contract_artifacts", return_value=[]),
+                patch(
+                    "src.platforms.catalog.semesters.publish_contract_artifacts",
+                    return_value=[],
+                ),
             ):
                 await make_curriculum()
                 store = SQLiteModelStore(root / "life-ustc-static.sqlite", reset=False)

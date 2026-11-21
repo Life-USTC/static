@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock
 
-from src.catalog_groups import (
+from src.platforms.catalog.groups import (
     CATALOG_GROUP_ENDPOINTS,
     CATALOG_GROUP_ENTRIES,
     CATALOG_GROUP_MEMBERS,

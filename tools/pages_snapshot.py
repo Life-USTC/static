@@ -74,7 +74,12 @@ def stage(source: Path, target: Path, *, publish: bool) -> None:
         raise ValueError("Source and destination must be separate directories")
     with TemporaryDirectory(dir=target.parent) as scratch:
         staged = Path(scratch) / "artifact"
-        ignore = [SNAPSHOT_FILENAME, FULL_SNAPSHOT_FILENAME, SNAPSHOT_FILENAME + "-*"]
+        ignore = [
+            "rss",
+            SNAPSHOT_FILENAME,
+            FULL_SNAPSHOT_FILENAME,
+            SNAPSHOT_FILENAME + "-*",
+        ]
         if publish:
             ignore.extend(DIAGNOSTICS)
         shutil.copytree(source, staged, ignore=shutil.ignore_patterns(*ignore))

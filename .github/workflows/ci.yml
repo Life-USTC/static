@@ -28,6 +28,8 @@ jobs:
         run: uv run ruff check . --output-format=github
       - name: Ruff format
         run: uv run ruff format --check .
+      - name: Type check collectors
+        run: uv run ty check src tools main.py
       - name: Run tests
         run: |
           uv run coverage run -m unittest discover -s tests -p 'test_*.py'

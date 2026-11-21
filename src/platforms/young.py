@@ -14,9 +14,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
-from .sqlite_store import SNAPSHOT_FILENAME, SQLiteModelStore
-from .utils.auth import RequestSession, USTCSession
-from .utils.tools import BUILD_DIR
+from src.batch import fetch_in_batches
+from src.http import RequestSession
+from src.platforms.passport import USTCSession
+from src.sqlite_store import SNAPSHOT_FILENAME, SQLiteModelStore
+from src.utils.tools import BUILD_DIR
 
 YOUNG_API_BASE = "https://young.ustc.edu.cn/login/wisdom-group-learning-bg"
 YOUNG_SIGNUP_URL = (
@@ -315,17 +317,6 @@ def _young_total(payload: dict[str, Any]) -> int:
     return total
 
 
-def _delete_young_source(store: SQLiteModelStore, source: str) -> None:
-    fetch_ids = [
-        row[0]
-        for row in store.conn.execute(
-            "SELECT id FROM upstream_fetches WHERE source = ?",
-            (source,),
-        )
-    ]
-    store.delete_fetches(fetch_ids)
-
-
 def _validate_young_record_ids(records: list[dict[str, Any]], *, endpoint: str) -> None:
     seen_ids: set[str] = set()
     for record in records:
@@ -401,12 +392,18 @@ async def _prepare_young_session(session: RequestSession) -> None:
 
     await session.page.goto(
         YOUNG_SIGNUP_URL,
-        wait_until="networkidle",
+        wait_until="domcontentloaded",
         timeout=session.timeout_ms,
     )
-    raw_token = await session.page.evaluate(
-        f"localStorage.getItem({YOUNG_TOKEN_STORAGE_KEY!r})"
+    handle = await session.page.wait_for_function(
+        "key => localStorage.getItem(key)",
+        arg=YOUNG_TOKEN_STORAGE_KEY,
+        timeout=session.timeout_ms,
     )
+    try:
+        raw_token = await handle.json_value()
+    finally:
+        await handle.dispose()
     token = _access_token_from_storage(raw_token)
     await session.sync_cookies_from_page()
     session.client.headers["x-access-token"] = token
@@ -511,15 +508,14 @@ async def make_young_events() -> None:
         try:
             async with USTCSession(after_login_services=False) as session:
                 await _prepare_young_session(session)
-                active_payload = await _fetch_young_event_list(
-                    session,
-                    endpoint=YOUNG_ACTIVE_ENDPOINT,
-                    page_size=YOUNG_PAGE_SIZE,
-                )
-                ended_payload = await _fetch_young_event_list(
-                    session,
-                    endpoint=YOUNG_ENDED_ENDPOINT,
-                    page_size=YOUNG_PAGE_SIZE,
+
+                async def fetch(endpoint):
+                    return await _fetch_young_event_list(
+                        session, endpoint=endpoint, page_size=YOUNG_PAGE_SIZE
+                    )
+
+                active_payload, ended_payload = await fetch_in_batches(
+                    fetch, [YOUNG_ACTIVE_ENDPOINT, YOUNG_ENDED_ENDPOINT], 2, 0.2
                 )
                 references, references_complete = _young_referenced_ids(
                     _young_records(active_payload) + _young_records(ended_payload)
@@ -540,7 +536,7 @@ async def make_young_events() -> None:
                             "Young referenced organization names: fetch_failed"
                         )
 
-            _delete_young_source(store, YOUNG_ACTIVE_SOURCE)
+            store.delete_source_fetches(YOUNG_ACTIVE_SOURCE)
             active_count = _store_young_event_payload(
                 store,
                 source=YOUNG_ACTIVE_SOURCE,
@@ -549,7 +545,7 @@ async def make_young_events() -> None:
                 list_type="active",
                 page_size=YOUNG_PAGE_SIZE,
             )
-            _delete_young_source(store, YOUNG_ENDED_SOURCE)
+            store.delete_source_fetches(YOUNG_ENDED_SOURCE)
             ended_count = _store_young_event_payload(
                 store,
                 source=YOUNG_ENDED_SOURCE,

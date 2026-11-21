@@ -3,10 +3,10 @@ import sqlite3
 import unittest
 from unittest.mock import AsyncMock
 
-from src.course_substitutions import refresh_course_substitutions
 from src.models.api.catalog_api_teach_course_substitutes import (
     CATALOG_COURSE_SUBSTITUTES as TABLE,
 )
+from src.platforms.catalog.substitutions import refresh_course_substitutions
 from src.sqlite_store import SQLiteModelStore
 
 

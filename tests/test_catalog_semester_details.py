@@ -6,14 +6,14 @@ from unittest.mock import patch
 
 import httpx
 
-from src.catalog_semester_details import (
-    SEMESTER_LIST_URL,
-    refresh_catalog_semester_details,
-)
 from src.models.api.catalog_api_teach_lesson_infos import TeachLessonInfo
 from src.models.api.catalog_api_teach_lesson_list_for_teach import (
     TeachLessonListItem,
     TeachLessonListResponse,
+)
+from src.platforms.catalog.sections import (
+    SEMESTER_LIST_URL,
+    refresh_catalog_semester_details,
 )
 from src.sqlite_store import SQLiteModelStore
 from src.upstream_contracts import CATALOG_LESSON_INFOS as PROFILES
@@ -55,12 +55,12 @@ class SectionRefreshTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.store.close)
         self.db = self.store.conn
         self.clock = self.enterContext(
-            patch("src.catalog_semester_details.datetime", wraps=datetime)
+            patch("src.platforms.catalog.sections.datetime", wraps=datetime)
         )
         self.clock.now.return_value = NOW
         self.enterContext(
             patch.multiple(
-                "src.catalog_semester_details",
+                "src.platforms.catalog.sections",
                 REQUEST_INTERVAL_SECONDS=0,
                 BATCH_SIZE=2,
                 MISSING_PROBE_LIMIT=1,
