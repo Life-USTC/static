@@ -61,17 +61,22 @@ jobs:
         run: |
           uv sync --frozen --no-dev
           uv run --no-dev patchright install chromium
-      - name: Restore previous Pages artifact cache
+      - name: Restore previous platform or Pages cache
         env:
           GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          mapfile -t run_ids < <(gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow build.yml \
-            --limit 50 \
-            --json databaseId,headBranch,conclusion \
-            --jq '[.[] | select(.headBranch == "master" and .conclusion == "success")][:7][].databaseId')
+          mapfile -t run_ids < <(
+            if [ "$GITHUB_REF_NAME" != master ] && [ "$PLATFORM" != academic ]; then
+              gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+                --branch "$GITHUB_REF_NAME" --limit 20 --json databaseId,conclusion \
+                --jq '[.[] | select(.conclusion == "success")][:3][].databaseId'
+            fi
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+              --branch master --limit 50 --json databaseId,conclusion \
+              --jq '[.[] | select(.conclusion == "success")][:7][].databaseId'
+          )
           if [ "${#run_ids[@]}" -eq 0 ]; then
             echo "No previous successful build artifact found"
             exit 0
@@ -79,6 +84,15 @@ jobs:
 
           mkdir -p build
           for run_id in "${run_ids[@]}"; do
+            platform_cache="$RUNNER_TEMP/platform-$run_id"
+            if [ "$PLATFORM" != academic ] &&
+              gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+                --name "static-$PLATFORM" --dir "$platform_cache" &&
+              test -s "$platform_cache/life-ustc-static.sqlite"; then
+              cp "$platform_cache/life-ustc-static.sqlite" build/
+              echo "Restored $PLATFORM cache from $run_id"
+              exit 0
+            fi
             rm -rf /tmp/previous-pages
             mkdir -p /tmp/previous-pages
             if gh run download "$run_id" \
