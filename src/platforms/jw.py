@@ -293,6 +293,37 @@ def _profile(course, lesson=None):
         "textbooks": None,
         "lastTerm": _name(course.get("lastExecuteSemester")),
     }
+    fields = (
+        (
+            "semester",
+            "requiredPeriodInfo",
+            "actualPeriods",
+            "scheduleText",
+            "scheduleStartWeek",
+            "scheduleEndWeek",
+            "planExamWeek",
+            "reserveCount",
+            "selectionInfo",
+            "nonSelectiveInfo",
+            "scheduleRemark",
+            "introduction",
+            "teachingMethod",
+            "preCourses",
+            "textbooks",
+        )
+        if lesson
+        else (
+            "periodInfo",
+            "defaultPreCourses",
+            "defaultOpenDepart",
+            "mngtDepartment",
+            "scoreMarkStyle",
+            "seasons",
+            "tags",
+            "newType",
+        )
+    )
+    profile["jw"] = {key: source[key] for key in fields if source.get(key) is not None}
     if lesson:
         profile["courseId"] = course["id"]
     return profile

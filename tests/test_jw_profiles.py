@@ -46,6 +46,7 @@ class JwProfileSmokeTest(unittest.IsolatedAsyncioTestCase):
             "code": "001",
             "nameZh": "测试",
             "credits": 0,
+            "seasons": ["AUTUMN"],
             "introduction": "简介",
             "enabled": True,
         }
@@ -75,6 +76,7 @@ class JwProfileSmokeTest(unittest.IsolatedAsyncioTestCase):
                 store.conn.execute(f"SELECT payload_json FROM {COURSES}").fetchone()[0]
             )
             self.assertEqual(profile["credit"], 0)
+            self.assertEqual(profile["jw"]["seasons"], ["AUTUMN"])
             self.assertEqual(profile["desc"]["cn"], "简介")
             self.assertNotIn("private", json.dumps(profile))
             self.assertEqual(

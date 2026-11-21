@@ -42,6 +42,7 @@ from src.models.blackboard import (
     ACCESS_TOO_LARGE,
     CATEGORY_OTHER,
     PAGE_KIND_CONTENT,
+    PAGE_KIND_ERROR,
     PAGE_KIND_LOGIN,
     PAGE_KIND_NOT_FOUND,
     BlackboardContent,
@@ -441,7 +442,7 @@ async def crawl_course(
     entry_kind = classify_page(
         status=entry.status, final_url=entry.final_url, html=entry.text, item_count=0
     )
-    if entry_kind == "error":
+    if entry_kind == PAGE_KIND_ERROR:
         raise RuntimeError(f"Blackboard course entry failed: HTTP {entry.status}")
     if entry_kind in {PAGE_KIND_LOGIN, PAGE_KIND_NOT_FOUND}:
         # The guest session is not allowed into this course. Record the refusal
