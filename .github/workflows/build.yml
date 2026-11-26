@@ -184,3 +184,21 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  request-import:
+    needs: deploy
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Request production snapshot import
+        env:
+          STATIC_IMPORT_WEBHOOK_URL: ${{ secrets.STATIC_IMPORT_WEBHOOK_URL }}
+          STATIC_IMPORT_WEBHOOK_SECRET: ${{ secrets.STATIC_IMPORT_WEBHOOK_SECRET }}
+        run: |
+          test -n "$STATIC_IMPORT_WEBHOOK_URL" || { echo "::error::STATIC_IMPORT_WEBHOOK_URL is required"; exit 1; }
+          test -n "$STATIC_IMPORT_WEBHOOK_SECRET" || { echo "::error::STATIC_IMPORT_WEBHOOK_SECRET is required"; exit 1; }
+          python tools/request_import.py

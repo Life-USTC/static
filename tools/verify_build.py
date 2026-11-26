@@ -9,6 +9,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import cast
 
+from tools.snapshot_health import build_health
+
 EXPECTED_SCHEMA_COUNT = 11
 OBSERVED_SCHEMA_COUNT = 5
 CATALOG_OUTPUTS = {
@@ -77,7 +79,12 @@ def _write_status_summary(
     summary_path: Path | None,
     builders: dict[str, dict[str, str]],
 ) -> None:
-    lines = ["## Static build status\n\n", "| Builder | Status |\n", "|---|---|\n"]
+    lines = [
+        "## Static build status\n\n",
+        f"Overall health: **{build_health(builders)}**\n\n",
+        "| Builder | Status |\n",
+        "|---|---|\n",
+    ]
     lines.extend(f"| {name} | {builders[name]['status']} |\n" for name in BUILDER_NAMES)
     if builders["curriculum"]["status"] != "ok":
         lines.extend(
