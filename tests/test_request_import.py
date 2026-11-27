@@ -46,7 +46,7 @@ class RequestImportTests(unittest.TestCase):
             return Response({"status": "queued", "deliveryId": delivery})
 
         environment = {
-            "STATIC_IMPORT_WEBHOOK_URL": "https://jp-2.example.test/api/static-import",
+            "STATIC_IMPORT_WEBHOOK_URL": "https://static-import.example.test/api/static-import",
             "STATIC_IMPORT_WEBHOOK_SECRET": "test-secret",
         }
         with (
