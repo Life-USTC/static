@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.sqlite_store import SCHEMA_VERSION, SNAPSHOT_FILENAME, _quote_identifier
+from tools.snapshot_health import build_health
 
 PLATFORMS = ("academic", "jw", "young", "blackboard")
 
@@ -166,9 +167,8 @@ def merge(parts: Path, build: Path) -> None:
             ".artifacts/upstream-contracts",
             dirs_exist_ok=True,
         )
-    (build / "build-status.json").write_text(
-        json.dumps({"builders": builders}, indent=2) + "\n"
-    )
+    status = {"builders": builders, "health": build_health(builders)}
+    (build / "build-status.json").write_text(json.dumps(status, indent=2) + "\n")
 
 
 if __name__ == "__main__":
