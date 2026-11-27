@@ -14,8 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ruff:
-    runs-on: ubuntu-latest
+  check:
+    name: Check
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout
