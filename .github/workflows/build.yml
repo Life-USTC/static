@@ -1,4 +1,4 @@
-name: Update Repo
+name: Static Snapshot
 
 on:
   schedule:
@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         platform: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["academic","jw","young","blackboard"]') }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     # A cold run includes all school semesters and bounded historical exam requests.
     timeout-minutes: 90
     steps:
@@ -134,9 +134,10 @@ jobs:
           retention-days: 7
 
   assemble:
+    name: Assemble
     if: ${{ !inputs.platform || inputs.platform == 'all' }}
     needs: update
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -170,6 +171,7 @@ jobs:
           retention-days: 7
 
   deploy:
+    name: Deploy
     if: github.ref == 'refs/heads/master'
     permissions:
       contents: read
@@ -178,7 +180,7 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: assemble
     steps:
       - name: Deploy to GitHub Pages
@@ -186,9 +188,10 @@ jobs:
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   request-import:
+    name: Import
     needs: deploy
     if: github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     permissions:
       contents: read

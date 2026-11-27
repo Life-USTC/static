@@ -9,7 +9,10 @@ from contextlib import closing
 from pathlib import Path
 from typing import cast
 
-from tools.snapshot_health import build_health
+if __package__:
+    from tools.snapshot_health import build_health
+else:
+    from snapshot_health import build_health
 
 EXPECTED_SCHEMA_COUNT = 11
 OBSERVED_SCHEMA_COUNT = 5

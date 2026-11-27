@@ -119,10 +119,10 @@ User-Agent 标明项目地址，并有每课程页数 / 资源数 / 单文件大
 汇总任务只替换对应平台的数据、重映射抓取记录 ID，统一检查 SQLite、契约与静态资源后才发布。
 `python main.py --platform academic` 可单独运行课程/教务任务，`--platform jw` 独立补充 JW 资料；省略该参数仍可本地完整构建。
 
-日更由 GitHub Actions（`build.yml`）驱动。Pages 发布成功后 `request-import` 会触发 server 的
-`Static Sync`，定时导入仍保留作为补偿。跨仓触发需要在 static 仓库配置
-`STATIC_IMPORT_WEBHOOK_URL` 和独立的 `STATIC_IMPORT_WEBHOOK_SECRET`。发布器使用带时间戳和
-delivery UUID 的 HMAC 签名请求 jp-2，不需要 GitHub token；jp-2 校验后持久化队列并返回 202。
+日更由 GitHub Actions（`build.yml`）驱动。Pages 发布成功后 `request-import` 通过 webhook
+触发服务端导入。跨仓触发需要在 static 仓库配置 `STATIC_IMPORT_WEBHOOK_URL` 和独立的
+`STATIC_IMPORT_WEBHOOK_SECRET`，不需要 GitHub token。发布器使用带时间戳和 delivery UUID
+的 HMAC 签名；接收端校验后持久化队列并返回 202。
 `build-status.json` 和 manifest 中的 `degraded` 表示至少一个 builder 复用了旧快照，并不阻止
 具有明确来源可用性边界的发布；应监控该状态，而不能只看 workflow 绿色。
 本地用 `uv run ruff check .`、`uv run ruff format --check .` 和
