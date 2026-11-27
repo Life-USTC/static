@@ -67,11 +67,6 @@ class PlatformSnapshotSmokeTest(unittest.TestCase):
                 self.assertEqual(
                     db.execute("SELECT COUNT(*) FROM upstream_fetches").fetchone(), (5,)
                 )
-            self.assertEqual(
-                set(
-                    json.loads((root / "merged/build-status.json").read_text())[
-                        "builders"
-                    ]
-                ),
-                set(PLATFORMS),
-            )
+            status = json.loads((root / "merged/build-status.json").read_text())
+            self.assertEqual(set(status["builders"]), set(PLATFORMS))
+            self.assertEqual(status["health"], "complete")

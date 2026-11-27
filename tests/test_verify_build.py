@@ -1,5 +1,7 @@
 import json
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,9 @@ from tools.verify_build import (
 
 
 class BuildVerificationTest(unittest.TestCase):
+    def test_direct_script_entrypoint(self) -> None:
+        subprocess.run([sys.executable, "tools/verify_build.py", "--help"], check=True)
+
     def test_section_coverage_matches_each_semester(self) -> None:
         db = sqlite3.connect(":memory:")
         self.addCleanup(db.close)
