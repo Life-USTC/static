@@ -1,4 +1,4 @@
-name: Update Repo
+name: Static Snapshot
 
 on:
   schedule:
