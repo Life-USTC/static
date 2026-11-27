@@ -2,6 +2,8 @@
 
 import argparse
 import gzip
+import hashlib
+import json
 import re
 import shutil
 import sqlite3
@@ -10,8 +12,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from src.sqlite_store import SNAPSHOT_FILENAME, _quote_identifier
+from tools.snapshot_health import build_health
 
 FULL_SNAPSHOT_FILENAME = SNAPSHOT_FILENAME + ".gz"
+MANIFEST_FILENAME = "snapshot-manifest.json"
 PAGES_MAX_BYTES = 1_000_000_000
 CATALOG = re.compile(
     r"catalog_teach_(?:course_(?:infos|search|substitute_pool_list|groups?|module_info)"
@@ -74,6 +78,56 @@ def copy_snapshot(source: Path, snapshot: Path, publish: bool) -> None:
         shutil.copyfile(raw, snapshot)
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _semester_ids(metadata: dict[str, str], key: str) -> list[int]:
+    return [int(value) for value in metadata.get(key, "").split(",") if value]
+
+
+def _write_manifest(staged: Path, db: sqlite3.Connection) -> None:
+    metadata = dict(db.execute("SELECT key, value FROM metadata"))
+    snapshot = staged / SNAPSHOT_FILENAME
+    compressed = staged / FULL_SNAPSHOT_FILENAME
+    status_path = staged / "build-status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    health = build_health(status["builders"])
+    status["health"] = health
+    status_path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+    manifest = {
+        "manifestVersion": 1,
+        "snapshotSchemaVersion": metadata["schema_version"],
+        "generatedAt": metadata["generated_at"],
+        "health": health,
+        "sourceAvailability": {
+            "unavailableCurriculumSemesterJwIds": _semester_ids(
+                metadata, "curriculum_unavailable_semester_ids"
+            ),
+            "unavailableExamSemesterJwIds": _semester_ids(
+                metadata, "catalog_exam_unavailable_semester_ids"
+            ),
+        },
+        "snapshot": {
+            "sha256": _sha256(snapshot),
+            "size": snapshot.stat().st_size,
+        },
+        "compressedSnapshot": {
+            "url": FULL_SNAPSHOT_FILENAME,
+            "sha256": _sha256(compressed),
+            "size": compressed.stat().st_size,
+        },
+    }
+    (staged / MANIFEST_FILENAME).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def stage(source: Path, target: Path, *, publish: bool) -> None:
     source, target = source.resolve(), target.resolve()
     if source.is_relative_to(target) or target.is_relative_to(source):
@@ -106,6 +160,7 @@ def stage(source: Path, target: Path, *, publish: bool) -> None:
                     ) as archive,
                 ):
                     shutil.copyfileobj(raw, archive)
+                _write_manifest(staged, db)
                 compact(db)
         if publish:
             (staged / ".nojekyll").touch()
