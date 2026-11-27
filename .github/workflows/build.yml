@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         platform: ${{ fromJSON(inputs.platform && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["academic","jw","young","blackboard"]') }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     # A cold run includes all school semesters and bounded historical exam requests.
     timeout-minutes: 90
     steps:
@@ -137,7 +137,7 @@ jobs:
     name: Assemble
     if: ${{ !inputs.platform || inputs.platform == 'all' }}
     needs: update
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -180,7 +180,7 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs: assemble
     steps:
       - name: Deploy to GitHub Pages
@@ -191,7 +191,7 @@ jobs:
     name: Import
     needs: deploy
     if: github.ref == 'refs/heads/master'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
       contents: read
