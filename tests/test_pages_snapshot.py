@@ -1,11 +1,18 @@
 import gzip
+import hashlib
+import json
 import sqlite3
 import unittest
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tools.pages_snapshot import FULL_SNAPSHOT_FILENAME, SNAPSHOT_FILENAME, stage
+from tools.pages_snapshot import (
+    FULL_SNAPSHOT_FILENAME,
+    MANIFEST_FILENAME,
+    SNAPSHOT_FILENAME,
+    stage,
+)
 
 
 class PagesSnapshotTest(unittest.TestCase):
@@ -23,7 +30,10 @@ class PagesSnapshotTest(unittest.TestCase):
                     (1,'jw'),(2,'catalog_teach_course_infos'),(3,'jw_catalog_lesson_infos');
                 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT);
                 INSERT INTO metadata VALUES
-                    ('legacy','kept'),('catalog_semester_details_461','{}'),('jw_catalog_semester_461','{}');
+                    ('legacy','kept'),('catalog_semester_details_461','{}'),('jw_catalog_semester_461','{}'),
+                    ('schema_version','6'),('generated_at','2026-11-26T00:00:00+00:00'),
+                    ('curriculum_unavailable_semester_ids','401,402'),
+                    ('catalog_exam_unavailable_semester_ids','402');
                 CREATE TABLE jw_lessons(
                     fetch_id INTEGER REFERENCES upstream_fetches(id));
                 INSERT INTO jw_lessons VALUES(1);
@@ -33,9 +43,42 @@ class PagesSnapshotTest(unittest.TestCase):
             """)
         original = raw.read_bytes()
         (build / "contract-report.json").touch()
+        (build / "build-status.json").write_text(
+            json.dumps({"builders": {"curriculum": {"status": "ok"}}})
+        )
         stage(build, pages, publish=True)
         archive = pages / FULL_SNAPSHOT_FILENAME
         packed = archive.read_bytes()
+        manifest = json.loads((pages / MANIFEST_FILENAME).read_text())
+        self.assertEqual(manifest["manifestVersion"], 1)
+        self.assertEqual(manifest["snapshotSchemaVersion"], "6")
+        self.assertEqual(manifest["health"], "complete")
+        self.assertEqual(
+            manifest["sourceAvailability"],
+            {
+                "unavailableCurriculumSemesterJwIds": [401, 402],
+                "unavailableExamSemesterJwIds": [402],
+            },
+        )
+        self.assertEqual(
+            manifest["snapshot"],
+            {
+                "sha256": hashlib.sha256(original).hexdigest(),
+                "size": len(original),
+            },
+        )
+        self.assertEqual(
+            manifest["compressedSnapshot"],
+            {
+                "url": FULL_SNAPSHOT_FILENAME,
+                "sha256": hashlib.sha256(packed).hexdigest(),
+                "size": len(packed),
+            },
+        )
+        self.assertEqual(
+            json.loads((pages / "build-status.json").read_text())["health"],
+            "complete",
+        )
         second = root / "second"
         stage(build, second, publish=True)
         self.assertEqual((second / FULL_SNAPSHOT_FILENAME).read_bytes(), packed)
@@ -45,7 +88,16 @@ class PagesSnapshotTest(unittest.TestCase):
         with closing(sqlite3.connect(pages / SNAPSHOT_FILENAME)) as db:
             for query, expected in (
                 ("SELECT id FROM upstream_fetches", [(1,)]),
-                ("SELECT key FROM metadata", [("legacy",)]),
+                (
+                    "SELECT key FROM metadata ORDER BY key",
+                    [
+                        ("catalog_exam_unavailable_semester_ids",),
+                        ("curriculum_unavailable_semester_ids",),
+                        ("generated_at",),
+                        ("legacy",),
+                        ("schema_version",),
+                    ],
+                ),
                 ("SELECT fetch_id FROM jw_lessons", [(1,)]),
             ):
                 self.assertEqual(db.execute(query).fetchall(), expected, query)
